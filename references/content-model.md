@@ -30,8 +30,33 @@
 `sections[]` 共有 `id`、`title`、`summary`（可选）和 `kind`：
 
 - `cards`（默认）／`checklist`：`items[]` 为字符串，或 `{title,body,meta,status,owner,acceptance,dependency,modules,outcome,scope}`。责任与验收字段完整展示。
-- `table`：`columns[]` 为非空中文表头数组，`rows[]` 为等长单元格数组。单元格支持字符串和数字；避免长段落。
+- `table`：`columns[]` 为非空中文表头数组，`rows[]` 为等长单元格数组。单元格支持字符串、数字或下述段落列表对象；避免长段落。
 - `flow`：`steps[]` 为 `{title,body,edge}`。`edge` 为到下一步的调用方式；最后一步不应带出口标签。步骤顺序与原始契约一致。
+- `comparison`：`items[]` 为 2 至 4 组同维度内容，结构同普通条目；可用 `outcome` 描述它们的共同结果或取舍。这是并列关系图，不生成评分。
+
+### 段落、列表与链接
+
+条目、步骤、结论、章节与附录都可添加 `paragraphs[]`、`bullets[]`、`links[]`。`body` 仍支持字符串；单换行保留停顿，双换行分段。表格单元格也可写为 `{text,paragraphs,bullets,links}`，替代长字符串。所有内容安全转义，不支持原始 HTML。
+
+```json
+{"paragraphs": ["先说明结果。", "再说明限制。"], "bullets": ["逐项核对。"], "links": [{"label": "打开原始报告", "href": "../original.html"}]}
+```
+
+显式链接必须包含非空 `label`、`href`。允许不带凭据的 HTTP／HTTPS、章节锚点、本地文档相对路径及本地 `file` URI；相对路径与 file 路径仅支持 HTML、PDF、Markdown、文本、JSON、常见图片等文档后缀。禁止命令协议、脚本 URL、协议相对地址和可执行文件。文件不会被生成器读取，存在性及分享后的可达性由报告作者核对。公开示例不要包含本机路径。
+
+正文中的裸 HTTP／HTTPS 地址自动生成链接；末尾中文标点不计入地址。外部网页在新标签页打开，附带 `noopener noreferrer`；离线阅读正文不需要访问这些网址。`sources[]` 可额外带 `href`，配合 `label` 生成描述性材料入口。
+
+链接检查覆盖用户信息和常见敏感参数，例如 `access_token`、`password`、`api_key`；无法猜测任意参数的业务含义。被排除的裸网址保持纯文本，显式链接报错。报告内容仍需在输入前脱敏，此检查不能替代完整的公开内容审查。
+
+### 正文内折叠
+
+`sections[].folds[]` 复用同样的 `title`、`summary`、`kind` 和内容字段，放在本章节主体之后。`open: true` 可默认展开，否则收起；详情嵌套最多两层。章节 `collapsed: true` 将主体整体收起，可用 `foldLabel` 说明内容；该章标题和摘要仍可见，适用于补充清单而非核心结论。
+
+```json
+{"id":"contracts","title":"职责与契约","summary":"先看职责摘要。","items":[{"title":"集成组","body":"关联请求与结果。"}],"folds":[{"title":"查看字段与验收明细","kind":"table","columns":["字段","含义"],"rows":[["taskId","关联请求与回调"]]}]}
+```
+
+有折叠时页面提供“展开全部详情／收起全部详情”；无 JavaScript 时原生折叠仍可用。章节导航展开该章主体，不展开全部补充块。打印统一展开并恢复打印前的开闭状态。完整例子见 [阅读编排示例](../examples/reading-layout.json)。
 
 `sections` 按输入顺序显示在问题台账之前，导航使用标题。无问题时隐藏台账。
 
@@ -45,6 +70,6 @@
 
 ## 安全与兼容
 
-值作为纯文本转义，不支持任意 HTML 或脚本。`sources[].ref` 和证据来源默认是引用文本，不会自动打开或执行路径。JSON 嵌入转义 `</script>`；不加载外部资源。
+值作为纯文本转义，不支持任意 HTML 或脚本。非 URL 的 `sources[].ref` 和证据来源仍是引用文本，不自动执行路径；文档入口显式用 `href`。JSON 嵌入转义 `</script>`；页面不加载外部资源。
 
 旧字段、旧状态和四层键继续支持；新版本加强内容核验。旧数据缺少问题标题、结论或没有证据也没有 `evidenceGap` 时会报错，按错误补齐即可。严格核验不能替代事实审查和真实浏览器验收。

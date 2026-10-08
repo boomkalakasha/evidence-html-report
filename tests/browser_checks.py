@@ -17,6 +17,8 @@ def run(output):
     output.mkdir(parents=True, exist_ok=True)
     brief = output / "brief.html"
     builder.build(ROOT / "examples/technical-brief.json", brief)
+    reading = output / "reading.html"
+    builder.build(ROOT / "examples/reading-layout.json", reading)
     data = json.loads((ROOT / "examples/audit.json").read_text(encoding="utf-8"))
     data["findings"][1]["summary"] = "页面 API 可显示错误，尚待独立业务核对。"
     source, audit = output / "audit-data.json", output / "audit.html"
@@ -101,6 +103,37 @@ def run(output):
         page.goto(brief.as_uri())
         page.screenshot(path=str(output / "brief-desktop.png"), full_page=True)
         checks.append("桌面与390px布局、流程边标识、局部表格滚动与导航")
+        page.goto(reading.as_uri())
+        initial = page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)')
+        assert initial == [False, True, False]
+        doc_link = page.get_by_role('link', name='JSON 数据格式说明')
+        assert doc_link.get_attribute('href') == 'https://docs.python.org/3/library/json.html'
+        assert doc_link.get_attribute('rel') == 'noopener noreferrer'
+        assert not page.locator('#roles .table-wrap').is_visible()
+        page.get_by_role('button', name='展开全部详情').click()
+        assert all(page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)'))
+        page.get_by_role('button', name='收起全部详情').click()
+        assert not any(page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)'))
+        page.locator('nav a[href="#roles"]').click()
+        assert not any(page.locator('#roles details').evaluate_all('elements => elements.map(element => element.open)')), '章节导航不应打开补充折叠'
+        page.locator('nav a[href="#checks"]').click()
+        assert page.locator('#checks > details').get_attribute('open') is not None
+        prior = page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)')
+        page.evaluate("window.dispatchEvent(new Event('beforeprint')); window.dispatchEvent(new Event('beforeprint'))")
+        assert all(page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)'))
+        page.evaluate("window.dispatchEvent(new Event('afterprint'))")
+        assert page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)') == prior
+        page.pdf(path=str(output / 'reading-print.pdf'), format='A4', print_background=True)
+        assert page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)') == prior
+        page.goto(reading.as_uri())
+        page.screenshot(path=str(output / 'reading-desktop.png'), full_page=True)
+        page.set_viewport_size({'width':390, 'height':844})
+        page.locator('#roles summary').click()
+        assert page.locator('#roles .content-table').is_visible()
+        assert page.locator('#roles td').nth(1).evaluate("element => getComputedStyle(element, '::before').content") == '"验收条件"'
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), '阅读页溢出'
+        page.screenshot(path=str(output / 'reading-mobile.png'), full_page=True)
+        checks.append('正文就近折叠、默认开闭、批量展开收起、导航展开、安全链接、手机表头与打印恢复')
         assert not errors, errors
         no_js = browser.new_context(java_script_enabled=False, viewport={"width": 390, "height": 844})
         static = no_js.new_page()
@@ -110,6 +143,12 @@ def run(output):
         assert "缺少回滚执行与结果核对记录" in static.locator("body").inner_text()
         assert static.locator("#finding-rows tr").count() == 3
         assert static.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        static.goto(reading.as_uri())
+        static.locator('#roles summary').click()
+        assert '无效输入有可理解的提示' in static.locator('body').inner_text()
+        assert not static.get_by_role('button', name='展开全部详情').is_visible()
+        static.emulate_media(media='print')
+        assert static.locator('#checks .fold-body').is_visible(), '无脚本打印仍需呈现收起的内容'
         checks.append("禁用JavaScript仍可阅读正文、台账与展开详情")
         no_js.close()
         browser.close()

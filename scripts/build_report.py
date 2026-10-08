@@ -8,6 +8,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit, unquote, parse_qsl
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYERS = {"SOURCE_BUILD": "源码与构建", "RUNTIME_UI": "运行与交互", "DATA_BUSINESS": "数据与业务", "RELEASE_CUTOVER": "发布与切流"}
@@ -19,6 +20,31 @@ RESERVED_IDS = {"overview", "evidence-layers", "findings-section", "print-findin
 
 def esc(value) -> str:
     return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def safe_url(value):
+    """Allow explicit document links; never turn commands or credentials into links."""
+    if not isinstance(value, str) or not value or re.search(r'[\s\\<>\x00-\x1f]', value):
+        return False
+    try:
+        url = urlsplit(value)
+        if url.scheme in ("https", "http"):
+            secret_keys = {"access_token", "token", "auth_token", "api_key", "apikey", "password", "pwd", "secret", "client_secret", "authorization", "credential", "access_key", "signature", "sig"}
+            params = parse_qsl(url.query) + parse_qsl(url.fragment)
+            if any(key.casefold().replace("-", "_") in secret_keys for key, _ in params):
+                return False
+            url.port  # Reject malformed port values before emitting the link.
+            return bool(url.hostname) and url.username is None and url.password is None
+        if value.startswith("#"):
+            return bool(re.fullmatch(r"#[\w-]+", value))
+        if url.scheme == "file":
+            if url.netloc or not url.path.startswith("/"):
+                return False
+        elif url.scheme or url.netloc or value.startswith("//"):
+            return False
+        return Path(unquote(url.path)).suffix.lower() in {".html", ".htm", ".pdf", ".md", ".txt", ".json", ".png", ".jpg", ".jpeg", ".svg"}
+    except ValueError:
+        return False
 
 
 def translated(value, mapping, fallback, overrides=None) -> str:
@@ -61,6 +87,18 @@ def validate(data: dict) -> None:
         if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
             raise ValueError(f"{location} 必须是文本数组")
 
+    def rich_fields(item, location):
+        text_fields(item, ("text",), location)
+        for key in ("paragraphs", "bullets"):
+            string_list(item.get(key, []), f"{location}.{key}")
+        links = item.get("links", [])
+        if not isinstance(links, list):
+            raise ValueError(f"{location}.links 必须是数组")
+        for link in links:
+            text_fields(link, ("label", "href"), f"{location}.links", ("label", "href"))
+            if not safe_url(link["href"]):
+                raise ValueError(f"{location} 包含无效或不允许的链接")
+
     def card_items(values, location):
         if not isinstance(values, list):
             raise ValueError(f"{location} 必须是数组")
@@ -68,11 +106,13 @@ def validate(data: dict) -> None:
             if isinstance(item, str):
                 continue
             text_fields(item, ("title", "name", "group", "body", "summary", "mission", "gap", "status", "owner", "priority", "meta", "scope", "dependency", "acceptance", "outcome", "category"), f"{location}[{index}]")
+            rich_fields(item, f"{location}[{index}]")
             if "modules" in item:
                 string_list(item["modules"], f"{location}[{index}].modules")
 
     text_fields(data, ("title", "generatedAt", "subtitle", "audience"), "报告")
     text_fields(data["verdict"], ("label", "summary", "blocker"), "verdict", ("label", "summary"))
+    rich_fields(data["verdict"], "verdict")
     string_list(data.get("scope", []), "scope")
     for key in ("statusLabels", "factLabels"):
         if any(not isinstance(value, str) for value in data.get(key, {}).values()):
@@ -87,9 +127,12 @@ def validate(data: dict) -> None:
             raise ValueError(f"metrics[{index}].value 必须是文本或数值")
     for index, appendix in enumerate(data.get("appendices", [])):
         text_fields(appendix, ("title", "body"), f"appendices[{index}]", ("title",))
+        rich_fields(appendix, f"appendices[{index}]")
         card_items(appendix.get("items", []), f"appendices[{index}].items")
     for index, source in enumerate(data.get("sources", [])):
-        text_fields(source, ("label", "ref", "note"), f"sources[{index}]")
+        text_fields(source, ("label", "ref", "note", "href"), f"sources[{index}]")
+        if source.get("href") and (not source.get("label") or not safe_url(source["href"])):
+            raise ValueError("来源链接需有效 href 与描述性 label")
     evidence_ids = set()
     for evidence in data["evidence"]:
         text_fields(evidence, ("id", "level", "source", "summary", "date", "scope", "limitation", "factKind"), "证据", ("id", "level", "source", "summary"))
@@ -115,17 +158,14 @@ def validate(data: dict) -> None:
             raise ValueError(f"{finding['id']} 缺少直接证据，需填写 evidenceGap")
         for key in ("assessment", "actions"):
             string_list(finding.get(key, []), f"问题 {key}")
-    section_ids = set(RESERVED_IDS)
-    for index, section in enumerate(data.get("sections", [])):
-        text_fields(section, ("id", "title", "summary", "kind"), f"sections[{index}]", ("title",))
-        if not isinstance(section, dict) or not section.get("title"):
-            raise ValueError("章节需包含 title")
-        section_id = section.get("id", f"section-{index + 1}")
-        if not isinstance(section_id, str) or not re.fullmatch(r"[\w-]+", section_id) or section_id in section_ids:
-            raise ValueError("章节 id 需唯一且仅含字母、数字、中文、下划线或短横线")
-        section_ids.add(section_id)
+    def block(section, location, depth=0):
+        text_fields(section, ("title", "summary", "kind", "outcome", "foldLabel"), location, ("title",))
+        rich_fields(section, location)
+        for key in ("collapsed", "open"):
+            if key in section and not isinstance(section[key], bool):
+                raise ValueError(f"{location}.{key} 必须是布尔值")
         kind = section.get("kind", "cards")
-        if kind not in ("cards", "checklist", "table", "flow"):
+        if kind not in ("cards", "checklist", "table", "flow", "comparison"):
             raise ValueError("未知章节类型：" + str(kind))
         if kind == "table":
             columns, rows = section.get("columns"), section.get("rows")
@@ -133,9 +173,13 @@ def validate(data: dict) -> None:
                 raise ValueError("表格需包含 columns 和 rows 数组")
             if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
                 raise ValueError("表格每行列数必须与表头一致")
-            string_list(columns, f"sections[{index}].columns")
-            if any(not isinstance(cell, (str, int, float)) or isinstance(cell, bool) for row in rows for cell in row):
-                raise ValueError("表格单元格必须是文本或数值")
+            string_list(columns, f"{location}.columns")
+            for row in rows:
+                for cell in row:
+                    if isinstance(cell, dict):
+                        rich_fields(cell, f"{location}.rows")
+                    elif not isinstance(cell, (str, int, float)) or isinstance(cell, bool):
+                        raise ValueError("表格单元格必须是文本、数值或段落列表对象")
         elif kind == "flow":
             steps = section.get("steps")
             if not isinstance(steps, list) or not steps or any(not isinstance(step, dict) or not step.get("title") for step in steps):
@@ -143,9 +187,26 @@ def validate(data: dict) -> None:
             if steps[-1].get("edge"):
                 raise ValueError("流程最后一步不能包含到下一步的 edge")
             for step_index, step in enumerate(steps):
-                text_fields(step, ("title", "body", "edge"), f"sections[{index}].steps[{step_index}]", ("title",))
+                text_fields(step, ("title", "body", "edge"), f"{location}.steps[{step_index}]", ("title",))
+                rich_fields(step, f"{location}.steps[{step_index}]")
         else:
-            card_items(section.get("items", []), f"sections[{index}].items")
+            card_items(section.get("items", []), f"{location}.items")
+            if kind == "comparison" and not 2 <= len(section.get("items", [])) <= 4:
+                raise ValueError("对比图需包含 2 至 4 组同维度内容")
+        folds = section.get("folds", [])
+        if not isinstance(folds, list) or (folds and depth >= 2):
+            raise ValueError("folds 应为数组，详情嵌套最多两层")
+        for index, fold in enumerate(folds):
+            block(fold, f"{location}.folds[{index}]", depth + 1)
+
+    section_ids = set(RESERVED_IDS) | {"fold-status"}
+    for index, section in enumerate(data.get("sections", [])):
+        text_fields(section, ("id", "title"), f"sections[{index}]", ("title",))
+        section_id = section.get("id", f"section-{index + 1}")
+        if not isinstance(section_id, str) or not re.fullmatch(r"[\w-]+", section_id) or section_id in section_ids:
+            raise ValueError("章节 id 需唯一且仅含字母、数字、中文、下划线或短横线")
+        section_ids.add(section_id)
+        block(section, f"sections[{index}]")
     labels = set()
     for term in data.get("glossary", []):
         text_fields(term, ("term", "full", "explanation"), "术语", ("term", "explanation"))
@@ -174,7 +235,7 @@ class Renderer:
         names = sorted(self.terms, key=len, reverse=True)
         self.pattern = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(name) for name in names) + r")(?![A-Za-z0-9_])", re.I) if names else None
 
-    def text(self, value, focusable=True):
+    def plain(self, value, focusable=True):
         source = str(value if value is not None else "")
         if not self.pattern:
             return esc(source)
@@ -188,6 +249,37 @@ class Renderer:
             last = match.end()
         return "".join(parts) + esc(source[last:])
 
+    def text(self, value, focusable=True):
+        source = str(value if value is not None else "")
+        if not focusable:
+            # Button and summary labels must not acquire nested interactive links.
+            return self.plain(source, False).replace("\r\n", "\n").replace("\n", "<br>")
+        result, last = [], 0
+        for match in re.finditer(r'https?://[^\s<>"，。；、！？）》】]+', source):
+            url = match.group().rstrip(".,;:!?)]}")
+            result.append(self.plain(source[last:match.start()], focusable))
+            result.append(self.link({"label": url, "href": url}) if safe_url(url) else esc(url))
+            last = match.start() + len(url)
+        result.append(self.plain(source[last:], focusable))
+        return "".join(result).replace("\r\n", "\n").replace("\n", "<br>")
+
+    def link(self, link):
+        target = link["href"]
+        external = ' target="_blank" rel="noopener noreferrer"' if urlsplit(target).scheme in ("http", "https") else ""
+        # Labels stay plain so glossary focus targets never nest inside links.
+        return f'<a href="{esc(target)}"{external}>{esc(link["label"])}</a>'
+
+    def rich(self, value):
+        if not isinstance(value, dict):
+            return "".join(f'<p>{self.text(part)}</p>' for part in str(value if value is not None else "").split("\n\n") if part)
+        result = self.rich(value.get("text", ""))
+        result += "".join(self.rich(part) for part in value.get("paragraphs", []))
+        if value.get("bullets"):
+            result += self.items(value["bullets"])
+        if value.get("links"):
+            result += '<ul class="links">' + "".join(f'<li>{self.link(link)}</li>' for link in value["links"]) + "</ul>"
+        return result
+
     def status(self, value):
         return translated(value, STATUSES, "待说明", self.data.get("statusLabels"))
 
@@ -200,14 +292,14 @@ class Renderer:
         return translated(value, FACTS, "待说明", self.data.get("factLabels"))
 
     def items(self, values):
-        return "<ul>" + "".join(f"<li>{self.text(value if not isinstance(value, dict) else value.get('body', value.get('title', '')))}</li>" for value in values) + "</ul>"
+        return "<ul>" + "".join(f"<li>{self.text(value) if not isinstance(value, dict) else self.rich(value.get('body', value.get('title', ''))) + self.rich(value)}</li>" for value in values) + "</ul>" if values else ""
 
     def card(self, item):
         if isinstance(item, str):
-            return f'<article class="item"><p>{self.text(item)}</p></article>'
+            return f'<article class="item">{self.rich(item)}</article>'
         title = item.get("title", item.get("name", item.get("group", "")))
         body = item.get("body", item.get("summary", item.get("mission", item.get("gap", ""))))
-        content = f"<h3>{self.text(title)}</h3><p>{self.text(body)}</p>"
+        content = (f"<h3>{self.text(title)}</h3>" if title else "") + self.rich(body) + self.rich(item)
         if item.get("status"):
             content += self.badge(item["status"])
         for key, label in (("owner", "责任方"), ("priority", "优先级"), ("meta", "说明"), ("scope", "范围"), ("dependency", "依赖"), ("acceptance", "验收"), ("outcome", "目标")):
@@ -217,21 +309,40 @@ class Renderer:
             content += self.items(item["modules"])
         return f'<article class="item">{content}</article>'
 
-    def section(self, section, section_id):
+    def block(self, section):
         kind = section.get("kind", "cards")
         if kind == "table":
             head = "".join(f"<th scope=\"col\">{self.text(cell)}</th>" for cell in section["columns"])
-            rows = "".join("<tr>" + "".join(f"<td>{self.text(cell)}</td>" for cell in row) + "</tr>" for row in section["rows"])
-            body = f'<div class="table-wrap" tabindex="0" role="region" aria-label="{esc(section["title"])}"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
+            rows = "".join("<tr>" + "".join(f'<td data-label="{esc(section["columns"][index])}">{self.rich(cell)}</td>' for index, cell in enumerate(row)) + "</tr>" for row in section["rows"])
+            body = f'<div class="table-wrap" tabindex="0" role="region" aria-label="{esc(section["title"])}"><table class="content-table"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
         elif kind == "flow":
             steps = []
             for index, step in enumerate(section["steps"]):
                 edge = f'<span class="flow-edge"><span>{self.text(step.get("edge", "下一步"))}</span><b aria-hidden="true">→</b></span>' if index < len(section["steps"]) - 1 else ""
-                steps.append(f'<li><div class="flow-node"><strong>{index + 1}. {self.text(step["title"])}</strong><p>{self.text(step.get("body", ""))}</p></div>{edge}</li>')
+                steps.append(f'<li><div class="flow-node"><strong>{index + 1}. {self.text(step["title"])}</strong>{self.rich(step.get("body", ""))}{self.rich(step)}</div>{edge}</li>')
             body = '<ol class="flow">' + "".join(steps) + "</ol>"
+        elif kind == "comparison":
+            arrow = '<svg class="merge-arrow" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3v17m-6-6 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>'
+            body = '<figure class="comparison"><div class="compare-lanes">' + "".join(self.card(item) for item in section["items"]) + "</div>"
+            if section.get("outcome"):
+                body += f'{arrow}<figcaption class="compare-outcome">{self.text(section["outcome"])}</figcaption>'
+            body += "</figure>"
         else:
             body = f'<div class="grid {"checklist" if kind == "checklist" else ""}">' + "".join(self.card(item) for item in section.get("items", [])) + "</div>"
-        return f'<section class="section" id="{esc(section_id)}"><h2>{self.text(section["title"])}</h2><p class="section-summary">{self.text(section.get("summary", ""))}</p>{body}</section>'
+        body += self.rich(section)
+        for fold in section.get("folds", []):
+            summary = self.rich(fold.get("summary", ""))
+            body += self.fold(fold["title"], summary + self.block(fold), fold.get("open", False))
+        return body
+
+    def fold(self, title, body, opened=False, primary=False):
+        return f'<details class="fold" data-fold{" data-primary" if primary else ""}{" open" if opened else ""}><summary>{self.text(title, False)}</summary><div class="fold-body">{body}</div></details>'
+
+    def section(self, section, section_id):
+        body = self.block(section)
+        if section.get("collapsed"):
+            body = self.fold(section.get("foldLabel", "查看完整内容"), body, primary=True)
+        return f'<section class="section" id="{esc(section_id)}"><h2>{self.text(section["title"])}</h2><div class="section-summary">{self.rich(section.get("summary", ""))}</div>{body}</section>'
 
     def evidence_html(self, evidence):
         layer = LAYERS.get(evidence["level"], translated(evidence["level"], {}, "其他证据"))
@@ -271,10 +382,10 @@ class Renderer:
         nav.extend([("evidence-layers", "证据范围"), ("appendix", "背景与证据附录")])
         report_type = {"audit": "审计评估", "brief": "技术方案简报", "handoff": "场景交接"}[data.get("reportType", "audit")]
         meta = ["生成时间：" + data["generatedAt"]] + (["读者：" + data["audience"]] if data.get("audience") else []) + data.get("scope", [])
-        content = f'<header class="hero"><div class="report-type">{report_type}</div><h1>{self.text(data["title"])}</h1><p>{self.text(data.get("subtitle", ""))}</p><div class="meta">' + "".join(f"<span>{self.text(value)}</span>" for value in meta) + "</div></header>"
+        content = f'<header class="hero"><h1>{self.text(data["title"])}</h1>{self.rich(data.get("subtitle", ""))}<div class="meta"><span>{report_type}</span>' + "".join(f"<span>{self.text(value)}</span>" for value in meta) + "</div></header>"
         content += '<nav class="nav no-print" aria-label="报告章节">' + "".join(f'<a href="#{esc(sid)}">{esc(title)}</a>' for sid, title in nav) + "</nav>"
         verdict_label = VERDICTS.get(verdict["label"].lower(), verdict["label"])
-        content += f'<section class="verdict" id="overview"><article class="card"><h2>核心结论</h2><div class="verdict-label">{self.text(verdict_label)}</div><p>{self.text(verdict["summary"])}</p></article><article class="card blocker"><h2>当前最大阻断</h2><p>{self.text(verdict.get("blocker") or "未登记阻断；请结合证据范围判断。")}</p></article></section>'
+        content += f'<section class="verdict" id="overview"><article class="card"><h2>核心结论</h2><div class="verdict-label">{self.text(verdict_label)}</div>{self.rich(verdict["summary"])}{self.rich(verdict)}</article><article class="card blocker"><h2>当前最大阻断</h2>{self.rich(verdict.get("blocker") or "未登记阻断；请结合证据范围判断。")}</article></section>'
         if data.get("metrics"):
             content += '<section class="metrics" id="metrics" aria-label="实测统计">' + "".join(f'<article class="card metric"><small>{self.text(metric["label"])}</small><strong>{self.text(metric["value"])}</strong><span class="muted">{self.text(metric.get("note", ""))}</span></article>' for metric in data["metrics"]) + "</section>"
         content += "".join(self.section(section, sid) for section, sid in sections)
@@ -305,17 +416,20 @@ class Renderer:
         if data.get("glossary"):
             appendices.append({"title": "术语表", "body": "正文虚线词可悬停或用键盘聚焦查看解释；完整释义如下。", "items": [f"{term['term']}{'（' + term['full'] + '）' if term.get('full') else ''}：{term['explanation']}" for term in data["glossary"]]})
         if data.get("sources"):
-            appendices.append({"title": "来源索引", "items": [" · ".join(str(source[key]) for key in ("label", "ref", "note") if source.get(key)) for source in data["sources"]]})
+            appendices.append({"title": "来源索引", "items": [{"body": " · ".join(source[key] for key in ("ref", "note") if source.get(key)), "links": [{"label": source["label"], "href": source["href"]}]} if source.get("href") else " · ".join(source[key] for key in ("label", "ref", "note") if source.get(key)) for source in data["sources"]]})
         # Include the whole evidence registry, including records not linked to findings.
         if data["evidence"]:
             appendices.append({"title": "证据登记", "evidence": data["evidence"]})
         folds = []
         for appendix in appendices:
-            body = f'<p>{self.text(appendix.get("body", ""))}</p>' + self.items(appendix.get("items", []))
+            body = self.rich(appendix.get("body", "")) + self.rich(appendix) + self.items(appendix.get("items", []))
             body += "".join(self.evidence_html(evidence) for evidence in appendix.get("evidence", []))
-            folds.append(f'<details class="fold"><summary>{self.text(appendix["title"], False)}</summary><div class="fold-body">{body}</div></details>')
+            folds.append(self.fold(appendix["title"], body))
         content += '<section class="section" id="appendix"><h2>背景与证据附录</h2>' + ("".join(folds) or '<p class="muted">未提供附录材料。</p>') + "</section>"
         content += f'<footer>{self.text(data["title"])} · {self.text(data["generatedAt"])} · 判断以顶部范围及证据限制为准。</footer>'
+        if 'data-fold' in content:
+            controls = '<div class="reading-tools js-only no-print"><span id="fold-status" aria-live="polite"></span><button data-fold-action="expand">展开全部详情</button><button data-fold-action="collapse">收起全部详情</button></div>'
+            content = content.replace('</nav>', '</nav>' + controls, 1)
         payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
         css = (ROOT / "assets/report.css").read_text(encoding="utf-8")
         js = (ROOT / "assets/report.js").read_text(encoding="utf-8")
