@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""从 UTF-8 JSON 生成可离线阅读、交互和打印的中文证据报告，仅依赖标准库。"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import re
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+LAYERS = {"SOURCE_BUILD": "源码与构建", "RUNTIME_UI": "运行与交互", "DATA_BUSINESS": "数据与业务", "RELEASE_CUTOVER": "发布与切流"}
+STATUSES = {"implemented": "已实现", "complete": "已完成", "completed": "已完成", "partial": "部分实现", "drift": "存在偏离", "missing": "未实现", "unverified": "待验证", "verified": "已验证", "not_run": "未执行", "not applicable": "不适用", "not_applicable": "不适用", "unknown": "待确认", "blocked": "受阻"}
+FACTS = {"current": "当前事实", "fact": "当前事实", "historical": "历史事实", "inference": "推断", "unverified": "待验证", "planned": "未来方案"}
+VERDICTS = {"conditional pass": "有条件通过", "pass": "通过", "fail": "未通过", "assessment": "评估结论"}
+RESERVED_IDS = {"overview", "evidence-layers", "findings-section", "print-findings", "appendix", "responsibilities", "required-modules", "future-modules", "other-modules", "metrics", "drawer", "report-data", "search", "close", "resize", "drawer-body", "count", "empty", "status-buttons", "finding-rows", "term-popover", "reset"}
+
+
+def esc(value) -> str:
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def translated(value, mapping, fallback, overrides=None) -> str:
+    raw = str(value or "")
+    if overrides and raw in overrides:
+        return str(overrides[raw])
+    return mapping.get(raw.lower(), raw if re.search(r"[\u3400-\u9fff]", raw) else fallback)
+
+
+def validate(data: dict) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("报告必须是 JSON 对象")
+    for key in ("title", "generatedAt"):
+        if not isinstance(data.get(key), str) or not data[key].strip():
+            raise ValueError(f"缺少非空字段：{key}")
+    if not isinstance(data.get("verdict"), dict) or not data["verdict"].get("label") or not data["verdict"].get("summary"):
+        raise ValueError("verdict 必须包含 label 和 summary")
+    for key in ("findings", "evidence"):
+        if not isinstance(data.get(key), list):
+            raise ValueError(f"{key} 必须是数组")
+    for key in ("scope", "metrics", "sections", "responsibilities", "modules", "appendices", "sources", "glossary", "evidenceLayers"):
+        if not isinstance(data.get(key, []), list):
+            raise ValueError(f"{key} 必须是数组")
+    for key in ("statusLabels", "factLabels"):
+        if not isinstance(data.get(key, {}), dict):
+            raise ValueError(f"{key} 必须是对象")
+    if data.get("reportType", "audit") not in ("audit", "brief", "handoff"):
+        raise ValueError("reportType 应为 audit、brief 或 handoff")
+    def text_fields(item, keys, location, required=()):
+        if not isinstance(item, dict):
+            raise ValueError(f"{location} 必须是对象")
+        for key in keys:
+            value = item.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{location}.{key} 必须是文本")
+            if key in required and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{location}.{key} 必须是非空文本")
+
+    def string_list(value, location):
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"{location} 必须是文本数组")
+
+    def card_items(values, location):
+        if not isinstance(values, list):
+            raise ValueError(f"{location} 必须是数组")
+        for index, item in enumerate(values):
+            if isinstance(item, str):
+                continue
+            text_fields(item, ("title", "name", "group", "body", "summary", "mission", "gap", "status", "owner", "priority", "meta", "scope", "dependency", "acceptance", "outcome", "category"), f"{location}[{index}]")
+            if "modules" in item:
+                string_list(item["modules"], f"{location}[{index}].modules")
+
+    text_fields(data, ("title", "generatedAt", "subtitle", "audience"), "报告")
+    text_fields(data["verdict"], ("label", "summary", "blocker"), "verdict", ("label", "summary"))
+    string_list(data.get("scope", []), "scope")
+    for key in ("statusLabels", "factLabels"):
+        if any(not isinstance(value, str) for value in data.get(key, {}).values()):
+            raise ValueError(f"{key} 的展示标签必须是文本")
+    for key in ("responsibilities", "modules"):
+        if any(not isinstance(item, dict) for item in data.get(key, [])):
+            raise ValueError(f"{key} 必须是对象数组")
+        card_items(data.get(key, []), key)
+    for index, metric in enumerate(data.get("metrics", [])):
+        text_fields(metric, ("label", "note"), f"metrics[{index}]", ("label",))
+        if "value" not in metric or not isinstance(metric["value"], (str, int, float)) or isinstance(metric["value"], bool):
+            raise ValueError(f"metrics[{index}].value 必须是文本或数值")
+    for index, appendix in enumerate(data.get("appendices", [])):
+        text_fields(appendix, ("title", "body"), f"appendices[{index}]", ("title",))
+        card_items(appendix.get("items", []), f"appendices[{index}].items")
+    for index, source in enumerate(data.get("sources", [])):
+        text_fields(source, ("label", "ref", "note"), f"sources[{index}]")
+    evidence_ids = set()
+    for evidence in data["evidence"]:
+        text_fields(evidence, ("id", "level", "source", "summary", "date", "scope", "limitation", "factKind"), "证据", ("id", "level", "source", "summary"))
+        if not isinstance(evidence, dict) or any(not evidence.get(key) for key in ("id", "level", "source", "summary")):
+            raise ValueError("每条证据需包含 id、level、source、summary")
+        if evidence["id"] in evidence_ids:
+            raise ValueError("证据编号重复：" + evidence["id"])
+        evidence_ids.add(evidence["id"])
+    finding_ids = set()
+    for finding in data["findings"]:
+        text_fields(finding, ("id", "title", "status", "summary", "priority", "owner", "factKind", "evidenceGap"), "问题", ("id", "title", "status", "summary"))
+        if not isinstance(finding, dict) or any(not finding.get(key) for key in ("id", "title", "status", "summary")):
+            raise ValueError("每个问题需包含 id、title、status、summary")
+        if finding["id"] in finding_ids:
+            raise ValueError("问题编号重复：" + finding["id"])
+        finding_ids.add(finding["id"])
+        refs = finding.get("evidence", [])
+        if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
+            raise ValueError("问题 evidence 必须是证据编号数组")
+        if any(ref not in evidence_ids for ref in refs):
+            raise ValueError(f"{finding['id']} 引用了不存在的证据")
+        if not refs and not str(finding.get("evidenceGap", "")).strip():
+            raise ValueError(f"{finding['id']} 缺少直接证据，需填写 evidenceGap")
+        for key in ("assessment", "actions"):
+            string_list(finding.get(key, []), f"问题 {key}")
+    section_ids = set(RESERVED_IDS)
+    for index, section in enumerate(data.get("sections", [])):
+        text_fields(section, ("id", "title", "summary", "kind"), f"sections[{index}]", ("title",))
+        if not isinstance(section, dict) or not section.get("title"):
+            raise ValueError("章节需包含 title")
+        section_id = section.get("id", f"section-{index + 1}")
+        if not isinstance(section_id, str) or not re.fullmatch(r"[\w-]+", section_id) or section_id in section_ids:
+            raise ValueError("章节 id 需唯一且仅含字母、数字、中文、下划线或短横线")
+        section_ids.add(section_id)
+        kind = section.get("kind", "cards")
+        if kind not in ("cards", "checklist", "table", "flow"):
+            raise ValueError("未知章节类型：" + str(kind))
+        if kind == "table":
+            columns, rows = section.get("columns"), section.get("rows")
+            if not isinstance(columns, list) or not columns or not isinstance(rows, list):
+                raise ValueError("表格需包含 columns 和 rows 数组")
+            if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
+                raise ValueError("表格每行列数必须与表头一致")
+            string_list(columns, f"sections[{index}].columns")
+            if any(not isinstance(cell, (str, int, float)) or isinstance(cell, bool) for row in rows for cell in row):
+                raise ValueError("表格单元格必须是文本或数值")
+        elif kind == "flow":
+            steps = section.get("steps")
+            if not isinstance(steps, list) or not steps or any(not isinstance(step, dict) or not step.get("title") for step in steps):
+                raise ValueError("流程需包含非空 steps，每步需有 title")
+            if steps[-1].get("edge"):
+                raise ValueError("流程最后一步不能包含到下一步的 edge")
+            for step_index, step in enumerate(steps):
+                text_fields(step, ("title", "body", "edge"), f"sections[{index}].steps[{step_index}]", ("title",))
+        else:
+            card_items(section.get("items", []), f"sections[{index}].items")
+    labels = set()
+    for term in data.get("glossary", []):
+        text_fields(term, ("term", "full", "explanation"), "术语", ("term", "explanation"))
+        if not isinstance(term, dict) or not term.get("term") or not term.get("explanation") or not isinstance(term.get("aliases", []), list):
+            raise ValueError("术语需包含 term、explanation，aliases 应为数组")
+        for label in [term["term"], *term.get("aliases", [])]:
+            if not isinstance(label, str) or not label.strip() or label.casefold() in labels:
+                raise ValueError("术语或别名为空或重复")
+            labels.add(label.casefold())
+    seen_layers = set()
+    for layer in data.get("evidenceLayers", []):
+        text_fields(layer, ("level", "status", "reason"), "证据层", ("level", "status", "reason"))
+        if not isinstance(layer, dict) or layer.get("level") not in LAYERS or layer["level"] in seen_layers or not layer.get("status") or not layer.get("reason"):
+            raise ValueError("证据层需包含唯一标准 level、status 与 reason")
+        seen_layers.add(layer["level"])
+
+
+class Renderer:
+    def __init__(self, data):
+        self.data = data
+        self.evidence = {item["id"]: item for item in data["evidence"]}
+        self.terms = {}
+        for index, term in enumerate(data.get("glossary", [])):
+            for label in [term["term"], *term.get("aliases", [])]:
+                self.terms[label.casefold()] = (index, term)
+        names = sorted(self.terms, key=len, reverse=True)
+        self.pattern = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(name) for name in names) + r")(?![A-Za-z0-9_])", re.I) if names else None
+
+    def text(self, value, focusable=True):
+        source = str(value if value is not None else "")
+        if not self.pattern:
+            return esc(source)
+        parts, last = [], 0
+        for match in self.pattern.finditer(source):
+            parts.append(esc(source[last:match.start()]))
+            index, term = self.terms[match.group().casefold()]
+            explanation = "：".join(str(term[key]) for key in ("full", "explanation") if term.get(key))
+            focus = ' tabindex="0"' if focusable else ""
+            parts.append(f'<abbr class="term"{focus} data-glossary="{index}" title="{esc(explanation)}">{esc(match.group())}</abbr>')
+            last = match.end()
+        return "".join(parts) + esc(source[last:])
+
+    def status(self, value):
+        return translated(value, STATUSES, "待说明", self.data.get("statusLabels"))
+
+    def badge(self, value):
+        status = self.status(value)
+        cls = "good" if status in ("已实现", "已完成", "已验证") else "warn" if "部分" in status else "bad" if status in ("未实现", "存在偏离", "受阻") else "pending"
+        return f'<span class="badge {cls}">{esc(status)}</span>'
+
+    def fact(self, value):
+        return translated(value, FACTS, "待说明", self.data.get("factLabels"))
+
+    def items(self, values):
+        return "<ul>" + "".join(f"<li>{self.text(value if not isinstance(value, dict) else value.get('body', value.get('title', '')))}</li>" for value in values) + "</ul>"
+
+    def card(self, item):
+        if isinstance(item, str):
+            return f'<article class="item"><p>{self.text(item)}</p></article>'
+        title = item.get("title", item.get("name", item.get("group", "")))
+        body = item.get("body", item.get("summary", item.get("mission", item.get("gap", ""))))
+        content = f"<h3>{self.text(title)}</h3><p>{self.text(body)}</p>"
+        if item.get("status"):
+            content += self.badge(item["status"])
+        for key, label in (("owner", "责任方"), ("priority", "优先级"), ("meta", "说明"), ("scope", "范围"), ("dependency", "依赖"), ("acceptance", "验收"), ("outcome", "目标")):
+            if item.get(key):
+                content += f'<p class="item-meta"><strong>{label}：</strong>{self.text(item[key])}</p>'
+        if item.get("modules"):
+            content += self.items(item["modules"])
+        return f'<article class="item">{content}</article>'
+
+    def section(self, section, section_id):
+        kind = section.get("kind", "cards")
+        if kind == "table":
+            head = "".join(f"<th scope=\"col\">{self.text(cell)}</th>" for cell in section["columns"])
+            rows = "".join("<tr>" + "".join(f"<td>{self.text(cell)}</td>" for cell in row) + "</tr>" for row in section["rows"])
+            body = f'<div class="table-wrap" tabindex="0" role="region" aria-label="{esc(section["title"])}"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
+        elif kind == "flow":
+            steps = []
+            for index, step in enumerate(section["steps"]):
+                edge = f'<span class="flow-edge"><span>{self.text(step.get("edge", "下一步"))}</span><b aria-hidden="true">→</b></span>' if index < len(section["steps"]) - 1 else ""
+                steps.append(f'<li><div class="flow-node"><strong>{index + 1}. {self.text(step["title"])}</strong><p>{self.text(step.get("body", ""))}</p></div>{edge}</li>')
+            body = '<ol class="flow">' + "".join(steps) + "</ol>"
+        else:
+            body = f'<div class="grid {"checklist" if kind == "checklist" else ""}">' + "".join(self.card(item) for item in section.get("items", [])) + "</div>"
+        return f'<section class="section" id="{esc(section_id)}"><h2>{self.text(section["title"])}</h2><p class="section-summary">{self.text(section.get("summary", ""))}</p>{body}</section>'
+
+    def evidence_html(self, evidence):
+        layer = LAYERS.get(evidence["level"], translated(evidence["level"], {}, "其他证据"))
+        meta = [evidence["source"]] + [f"{label}：{evidence[key]}" for key, label in (("date", "日期"), ("scope", "范围"), ("limitation", "限制")) if evidence.get(key)]
+        if evidence.get("factKind"):
+            meta.append("性质：" + self.fact(evidence["factKind"]))
+        return f'<article class="evidence"><strong>{self.text(evidence["id"])} · {esc(layer)}</strong><p>{self.text(evidence["summary"])}</p>' + "".join(f'<p class="evidence-meta muted">{self.text(value)}</p>' for value in meta) + "</article>"
+
+    def detail(self, finding):
+        body = f'<article class="detail"><h2>{self.text(finding["id"] + " · " + finding["title"])}</h2><p>{self.badge(finding["status"])} {self.text(finding.get("owner", "待指定责任方"))} · {self.text(finding.get("priority", "待定优先级"))}</p><p>{self.text(finding["summary"])}</p>'
+        if finding.get("factKind"):
+            body += f'<p>判断性质：{esc(self.fact(finding["factKind"]))}</p>'
+        for key, label in (("assessment", "判断依据"), ("actions", "纠正与行动")):
+            if finding.get(key):
+                body += f"<h3>{label}</h3>" + self.items(finding[key])
+        body += "<h3>直接证据与边界</h3>"
+        body += "".join(self.evidence_html(self.evidence[ref]) for ref in finding.get("evidence", []))
+        if finding.get("evidenceGap"):
+            body += f'<p class="muted">证据缺口：{self.text(finding["evidenceGap"])}</p>'
+        return body + "</article>"
+
+    def render(self):
+        data, verdict = self.data, self.data["verdict"]
+        sections = [(section, section.get("id", f"section-{index + 1}")) for index, section in enumerate(data.get("sections", []))]
+        if data.get("responsibilities"):
+            sections.append(({"title": "职责与验收", "items": data["responsibilities"]}, "responsibilities"))
+        groups = {"required": [], "future": [], "other": []}
+        for module in data.get("modules", []):
+            category = module.get("category")
+            groups["required" if category in ("required", "本次必做") else "future" if category in ("future", "后续预留") else "other"].append(module)
+        for key, title in (("required", "本次必做"), ("future", "后续预留"), ("other", "其他模块")):
+            if groups[key]:
+                sections.append(({"title": title, "items": groups[key]}, f"{key}-modules"))
+        nav = [("overview", "核心结论"), *[(sid, section["title"]) for section, sid in sections]]
+        if data["findings"]:
+            nav.append(("findings-section", "发现与行动"))
+        nav.extend([("evidence-layers", "证据范围"), ("appendix", "背景与证据附录")])
+        report_type = {"audit": "审计评估", "brief": "技术方案简报", "handoff": "场景交接"}[data.get("reportType", "audit")]
+        meta = ["生成时间：" + data["generatedAt"]] + (["读者：" + data["audience"]] if data.get("audience") else []) + data.get("scope", [])
+        content = f'<header class="hero"><div class="report-type">{report_type}</div><h1>{self.text(data["title"])}</h1><p>{self.text(data.get("subtitle", ""))}</p><div class="meta">' + "".join(f"<span>{self.text(value)}</span>" for value in meta) + "</div></header>"
+        content += '<nav class="nav no-print" aria-label="报告章节">' + "".join(f'<a href="#{esc(sid)}">{esc(title)}</a>' for sid, title in nav) + "</nav>"
+        verdict_label = VERDICTS.get(verdict["label"].lower(), verdict["label"])
+        content += f'<section class="verdict" id="overview"><article class="card"><h2>核心结论</h2><div class="verdict-label">{self.text(verdict_label)}</div><p>{self.text(verdict["summary"])}</p></article><article class="card blocker"><h2>当前最大阻断</h2><p>{self.text(verdict.get("blocker") or "未登记阻断；请结合证据范围判断。")}</p></article></section>'
+        if data.get("metrics"):
+            content += '<section class="metrics" id="metrics" aria-label="实测统计">' + "".join(f'<article class="card metric"><small>{self.text(metric["label"])}</small><strong>{self.text(metric["value"])}</strong><span class="muted">{self.text(metric.get("note", ""))}</span></article>' for metric in data["metrics"]) + "</section>"
+        content += "".join(self.section(section, sid) for section, sid in sections)
+        templates, print_content = [], []
+        if data["findings"]:
+            statuses = list(dict.fromkeys(self.status(finding["status"]) for finding in data["findings"]))
+            buttons = "".join(f'<button data-status-filter="{esc(status)}" aria-pressed="false">{esc(status)}</button>' for status in statuses)
+            rows = []
+            for finding in data["findings"]:
+                search = json.dumps([finding, *[self.evidence[ref] for ref in finding.get("evidence", [])]], ensure_ascii=False)
+                rows.append(f'<tr data-status="{esc(self.status(finding["status"]))}" data-search="{esc(search)}"><td><button class="finding" data-id="{esc(finding["id"])}">{self.text(finding["id"] + " · " + finding["title"], False)}</button></td><td>{self.badge(finding["status"])}</td><td>{self.text(finding["summary"])}</td><td>{self.text(finding.get("owner", "待指定责任方"))}<br><small>{self.text(finding.get("priority", "待定优先级"))}</small></td></tr>')
+                detail = self.detail(finding)
+                templates.append(f'<template data-finding="{esc(finding["id"])}">{detail}</template>')
+                print_content.append(f'<div class="print-finding">{detail}</div>')
+            content += f'<section class="section" id="findings-section"><div class="section-head"><h2>发现与行动</h2><small id="count">显示 {len(rows)} / {len(rows)} 项</small></div><div class="tools no-print"><input id="search" aria-label="搜索发现" placeholder="搜索标题、结论、责任方或证据"><button data-status-filter="" class="active" aria-pressed="true">全部</button><span id="status-buttons">{buttons}</span><button id="reset">清空筛选</button></div><div class="table-wrap" role="region" aria-label="问题台账" tabindex="0"><table><thead><tr><th scope="col">问题</th><th scope="col">状态</th><th scope="col">判断</th><th scope="col">责任与优先级</th></tr></thead><tbody id="finding-rows">{"".join(rows)}</tbody></table><p class="empty muted" id="empty" hidden>没有匹配项，请清空筛选后重试。</p></div></section>'
+            content += '<section class="section print-only" id="print-findings"><h2>问题详情、行动与证据</h2>' + "".join(print_content) + "</section>"
+            content += '<noscript><section class="section no-print"><h2>问题详情、行动与证据</h2>' + "".join(f'<details class="fold"><summary>{esc(finding["title"])}</summary><div class="fold-body">{self.detail(finding)}</div></details>' for finding in data["findings"]) + "</section></noscript>"
+        explicit_layers = {layer["level"]: layer for layer in data.get("evidenceLayers", [])}
+        layers = []
+        for key, title in LAYERS.items():
+            layer = explicit_layers.get(key)
+            count = sum(evidence["level"] == key for evidence in data["evidence"])
+            status = self.status(layer["status"]) if layer else "已登记证据" if count else "待确认"
+            reason = layer["reason"] if layer else f"登记 {count} 条证据；不等于该层验收通过。" if count else "未登记该层证据或不适用说明。"
+            layers.append(f'<article class="layer"><strong>{title}</strong><span class="badge">{esc(status)}</span><p>{self.text(reason)}</p></article>')
+        content += '<section class="section" id="evidence-layers"><h2>证据范围</h2><div class="layer-grid">' + "".join(layers) + "</div></section>"
+        appendices = list(data.get("appendices", []))
+        if data.get("glossary"):
+            appendices.append({"title": "术语表", "body": "正文虚线词可悬停或用键盘聚焦查看解释；完整释义如下。", "items": [f"{term['term']}{'（' + term['full'] + '）' if term.get('full') else ''}：{term['explanation']}" for term in data["glossary"]]})
+        if data.get("sources"):
+            appendices.append({"title": "来源索引", "items": [" · ".join(str(source[key]) for key in ("label", "ref", "note") if source.get(key)) for source in data["sources"]]})
+        # Include the whole evidence registry, including records not linked to findings.
+        if data["evidence"]:
+            appendices.append({"title": "证据登记", "evidence": data["evidence"]})
+        folds = []
+        for appendix in appendices:
+            body = f'<p>{self.text(appendix.get("body", ""))}</p>' + self.items(appendix.get("items", []))
+            body += "".join(self.evidence_html(evidence) for evidence in appendix.get("evidence", []))
+            folds.append(f'<details class="fold"><summary>{self.text(appendix["title"], False)}</summary><div class="fold-body">{body}</div></details>')
+        content += '<section class="section" id="appendix"><h2>背景与证据附录</h2>' + ("".join(folds) or '<p class="muted">未提供附录材料。</p>') + "</section>"
+        content += f'<footer>{self.text(data["title"])} · {self.text(data["generatedAt"])} · 判断以顶部范围及证据限制为准。</footer>'
+        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+        css = (ROOT / "assets/report.css").read_text(encoding="utf-8")
+        js = (ROOT / "assets/report.js").read_text(encoding="utf-8")
+        return f'''<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>{esc(data["title"])}</title><style>{css}</style></head><body>
+<main class="shell">{content}</main>{"".join(templates)}
+<dialog id="drawer" aria-label="详情与证据"><div class="drawer"><div class="drawer-head"><strong>详情与证据</strong><button class="close" id="close">关闭</button></div><div class="resize" id="resize" role="separator" tabindex="0" aria-label="调整详情宽度" aria-orientation="vertical"></div><div class="drawer-body" id="drawer-body"></div></div></dialog>
+<div class="term-popover" id="term-popover" role="tooltip" hidden></div><script type="application/json" id="report-data">{payload}</script><script>{js}</script></body></html>'''
+
+
+def build(source: Path, target: Path) -> None:
+    data = json.loads(source.read_text(encoding="utf-8-sig"))
+    validate(data)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(Renderer(data).render(), encoding="utf-8")
+
+
+def self_test() -> None:
+    data = {"title": "生成器自检", "generatedAt": "示例", "verdict": {"label": "待验证", "summary": "仅检验报告生成。"}, "findings": [], "evidence": []}
+    with tempfile.TemporaryDirectory() as directory:
+        source, target = Path(directory) / "in.json", Path(directory) / "out.html"
+        source.write_text(json.dumps(data), encoding="utf-8")
+        build(source, target)
+        assert "生成器自检" in target.read_text(encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="生成离线中文 HTML 报告")
+    parser.add_argument("source", nargs="?", type=Path, help="输入 JSON")
+    parser.add_argument("target", nargs="?", type=Path, help="输出 HTML")
+    parser.add_argument("--self-test", action="store_true", help="运行生成器自检")
+    args = parser.parse_args()
+    try:
+        if args.self_test:
+            self_test()
+            print("生成器自检：通过")
+        elif args.source and args.target:
+            build(args.source, args.target)
+            print(args.target.resolve())
+        else:
+            parser.error("请提供输入 JSON 与输出 HTML")
+    except (ValueError, OSError) as error:
+        parser.exit(1, f"生成失败：{error}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
