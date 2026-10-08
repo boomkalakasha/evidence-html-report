@@ -78,9 +78,38 @@ document.addEventListener('focusout', event => { if (event.target.closest?.('.te
 addEventListener('resize', hideTerm);
 addEventListener('scroll', hideTerm, true);
 
-let foldState = [];
+document.documentElement.classList.add('js-enabled');
+const folds = [...document.querySelectorAll('details[data-fold]')];
+function updateFoldCount() {
+  const counter = $('#fold-status');
+  if (counter) counter.textContent = `详情已展开 ${folds.filter(fold => fold.open).length} / ${folds.length} 项`;
+}
+folds.forEach(fold => fold.addEventListener('toggle', updateFoldCount));
+document.querySelectorAll('[data-fold-action]').forEach(button => button.addEventListener('click', () => {
+  folds.forEach(fold => { fold.open = button.dataset.foldAction === 'expand'; });
+  updateFoldCount();
+}));
+function revealAnchor(hash) {
+  let id;
+  try { id = decodeURIComponent(hash.slice(1)); } catch { return; }
+  const target = document.getElementById(id);
+  if (!target) return;
+  for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName === 'DETAILS') parent.open = true;
+  }
+  // Chapter navigation exposes its primary content, leaving optional deeper folds alone.
+  target.querySelector(':scope > details[data-primary]')?.setAttribute('open', '');
+  updateFoldCount();
+}
+document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', () => revealAnchor(link.getAttribute('href'))));
+addEventListener('hashchange', () => revealAnchor(location.hash));
+if (location.hash) revealAnchor(location.hash);
+updateFoldCount();
+
+let foldState = null;
 addEventListener('beforeprint', () => {
+  if (foldState) return; // Some print engines dispatch beforeprint twice.
   foldState = [...document.querySelectorAll('details')].map(element => [element, element.open]);
   foldState.forEach(([element]) => { element.open = true; });
 });
-addEventListener('afterprint', () => { foldState.forEach(([element, open]) => { element.open = open; }); foldState = []; });
+addEventListener('afterprint', () => { foldState?.forEach(([element, open]) => { element.open = open; }); foldState = null; updateFoldCount(); });

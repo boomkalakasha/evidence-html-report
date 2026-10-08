@@ -148,6 +148,75 @@ class BuilderTests(unittest.TestCase):
         visible.feed(render(data))
         self.assertIn("有条件通过", " ".join(visible.parts))
 
+    def test_contextual_folds_preserve_summary_and_static_content(self):
+        data = sample()
+        data["sections"][1].update(collapsed=True, foldLabel="查看逐项对照", summary="默认先读摘要")
+        data["sections"][0]["folds"] = [{"title": "为何按此顺序", "open": True, "items": [{"body": "先登记，再执行", "bullets": ["保留任务编号", "核对结果"]}]}]
+        output = render(data)
+        self.assertIn('data-fold', output)
+        self.assertIn("默认先读摘要", output)
+        self.assertIn("查看逐项对照", output)
+        self.assertIn('<li>保留任务编号</li>', output)
+        self.assertIn(' open', output)
+
+    def test_paragraphs_and_linked_cells_are_readable_and_safe(self):
+        data = sample()
+        data["sections"][1]["rows"][0][1] = {"paragraphs": ["第一段", "第二段"], "bullets": ["可逐条核对"], "links": [{"label": "接口文档", "href": "https://example.com/docs?a=1&b=2"}, {"label": "本地报告", "href": "../report.html"}]}
+        data["sections"][0]["steps"][0]["body"] = "请求到达\n记录编号\n\n完整说明 https://example.com/guide。"
+        output = render(data)
+        self.assertIn("<p>第一段</p><p>第二段</p>", output)
+        self.assertIn('href="https://example.com/docs?a=1&amp;b=2"', output)
+        self.assertIn('href="../report.html"', output)
+        self.assertIn('href="https://example.com/guide"', output)
+        self.assertIn("请求到达<br>记录编号", output)
+        for target in ("javascript:alert(1)", "data:text/html,x", "https://user:pass@example.com", "//other.example.com/x", "../run.exe"):
+            data["sections"][1]["rows"][0][1]["links"][0]["href"] = target
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                builder.validate(data)
+
+    def test_comparison_diagram_is_structured_and_not_an_invented_score(self):
+        data = sample()
+        data["sections"] = [{"id": "inputs", "title": "方案比较", "kind": "comparison", "items": [{"title": "方案甲", "bullets": ["调用具体"]}, {"title": "方案乙", "bullets": ["证据完整"]}], "outcome": "结合两者"}]
+        output = render(data)
+        for text in ("方案甲", "调用具体", "方案乙", "证据完整", "结合两者"):
+            self.assertIn(text, output)
+        self.assertIn('<figure', output)
+        self.assertNotIn('百分比', output)
+
+    def test_invalid_fold_and_link_shapes_fail_before_rendering(self):
+        for field, value in (("collapsed", "true"), ("folds", [None]), ("folds", [{"title": "细节", "open": "false"}]), ("links", [{"href": "https://example.com"}])):
+            data = sample()
+            data["sections"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                builder.validate(data)
+
+    def test_null_section_id_is_a_validation_error(self):
+        data = sample()
+        data['sections'][0]['id'] = None
+        with self.assertRaises(ValueError):
+            builder.validate(data)
+
+    def test_control_labels_never_gain_nested_links(self):
+        data = sample()
+        data['findings'][0]['title'] = '查看 https://example.com'
+        data['sections'][0]['folds'] = [{'title':'网址 https://example.com', 'items':['正文']}]
+        output = render(data)
+        button = output.split('class="finding"',1)[1].split('</button>',1)[0]
+        summary = output.split('<summary>网址',1)[1].split('</summary>',1)[0]
+        self.assertNotIn('<a ',button)
+        self.assertNotIn('<a ',summary)
+
+    def test_query_credentials_are_never_active_links(self):
+        for suffix in ('?access_token=fictional-secret', '?password=fictional-secret', '#api_key=fictional-secret'):
+            url = 'https://example.com/docs' + suffix
+            data = sample()
+            data['sections'][0]['steps'][0]['body'] = url
+            output = render(data)
+            self.assertNotIn('href="' + url + '"', output)
+            data['sections'][0]['links'] = [{'label':'材料','href':url}]
+            with self.assertRaises(ValueError):
+                builder.validate(data)
+
 
 if __name__ == "__main__":
     unittest.main()
