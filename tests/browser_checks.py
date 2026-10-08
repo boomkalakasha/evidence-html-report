@@ -96,7 +96,7 @@ def run(output):
         assert page.locator(".flow-edge").count() == 3
         assert all(page.locator(".flow-edge").evaluate_all("elements => elements.map(element => element.getBoundingClientRect().height > 0)"))
         assert "HTTP 请求" in page.locator(".flow").inner_text()
-        page.locator('nav a[href="#contracts"]').click()
+        page.locator('.nav a[href="#contracts"]').click()
         assert page.evaluate("location.hash") == "#contracts"
         page.screenshot(path=str(output / "brief-mobile.png"), full_page=True)
         page.set_viewport_size({"width": 1440, "height": 1000})
@@ -105,7 +105,7 @@ def run(output):
         checks.append("桌面与390px布局、流程边标识、局部表格滚动与导航")
         page.goto(reading.as_uri())
         initial = page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)')
-        assert initial == [False, True, False]
+        assert initial == [False, True, False, False]
         doc_link = page.get_by_role('link', name='JSON 数据格式说明')
         assert doc_link.get_attribute('href') == 'https://docs.python.org/3/library/json.html'
         assert doc_link.get_attribute('rel') == 'noopener noreferrer'
@@ -114,9 +114,9 @@ def run(output):
         assert all(page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)'))
         page.get_by_role('button', name='收起全部详情').click()
         assert not any(page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)'))
-        page.locator('nav a[href="#roles"]').click()
+        page.locator('.nav a[href="#roles"]').click()
         assert not any(page.locator('#roles details').evaluate_all('elements => elements.map(element => element.open)')), '章节导航不应打开补充折叠'
-        page.locator('nav a[href="#checks"]').click()
+        page.locator('.nav a[href="#checks"]').click()
         assert page.locator('#checks > details').get_attribute('open') is not None
         prior = page.locator('details[data-fold]').evaluate_all('elements => elements.map(element => element.open)')
         page.evaluate("window.dispatchEvent(new Event('beforeprint')); window.dispatchEvent(new Event('beforeprint'))")
@@ -134,6 +134,33 @@ def run(output):
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), '阅读页溢出'
         page.screenshot(path=str(output / 'reading-mobile.png'), full_page=True)
         checks.append('正文就近折叠、默认开闭、批量展开收起、导航展开、安全链接、手机表头与打印恢复')
+        page.set_viewport_size({'width':1440,'height':1000})
+        page.goto(reading.as_uri())
+        page.locator('#report-outline > summary').click()
+        page.locator('#report-outline a[href="#outline-2-1"]').click()
+        assert page.locator('#outline-2-1').get_attribute('open') is not None
+        page.wait_for_function("document.querySelector('#reading-position').textContent.includes('2 / 6')")
+        assert page.locator('.nav a[aria-current="location"]').get_attribute('href') == '#roles'
+        page.goto(reading.as_uri())
+        page.locator('#overview a[href="#evidence-2"]').click()
+        assert page.locator('#evidence-2').is_visible()
+        page.wait_for_function("document.querySelector('#evidence-2').getBoundingClientRect().top < innerHeight-80")
+        assert '未提供可访问原项' in page.locator('#evidence-2').inner_text()
+        assert page.locator('#evidence-1 a').get_attribute('href') == 'https://docs.python.org/3/library/json.html#basic-usage'
+        assert page.locator('.nav a[aria-current]').count() == 1
+        assert page.locator('#evidence-layers details').get_attribute('open') is not None
+        page.screenshot(path=str(output / 'evidence-index.png'))
+        page.set_viewport_size({'width':390,'height':844})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), '证据清单页溢出'
+        assert page.locator('#evidence-2 td').nth(1).evaluate("element=>getComputedStyle(element,'::before').content") == '"来源与原项入口"'
+        page.goto('about:blank')
+        page.goto(reading.as_uri()+'#evidence-2')
+        assert page.locator('#evidence-2').is_visible(), '直接打开凭证锚点需展开父级'
+        page.wait_for_function("document.querySelector('#evidence-2').getBoundingClientRect().top < innerHeight-80")
+        page.locator('.nav a[href="#appendix"]').click()
+        page.wait_for_function("document.querySelector('#reading-position').textContent.includes('6 / 6')")
+        assert '完成率' not in page.locator('#reading-position').inner_text()
+        checks.append('目录与章节编号、按节展开、当前章节、逐项凭证跳转、原项链接与无法跳转说明')
         assert not errors, errors
         no_js = browser.new_context(java_script_enabled=False, viewport={"width": 390, "height": 844})
         static = no_js.new_page()

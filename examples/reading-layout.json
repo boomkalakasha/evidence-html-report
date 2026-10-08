@@ -13,7 +13,11 @@
       "主链与下一步常显。",
       "补充材料按需展开。"
     ],
-    "blocker": "仅演示报告编排，未运行真实服务。"
+    "blocker": "仅演示报告编排，未运行真实服务。",
+    "evidence": [
+      "凭证甲",
+      "凭证乙"
+    ]
   },
   "sections": [
     {
@@ -66,6 +70,9 @@
             ]
           ]
         }
+      ],
+      "evidence": [
+        "凭证甲"
       ]
     },
     {
@@ -128,13 +135,41 @@
             "模拟超时。",
             "核对重复回调。",
             "核对错误提示。"
+          ],
+          "evidence": [
+            "凭证乙"
           ]
         }
       ]
     }
   ],
   "findings": [],
-  "evidence": [],
+  "evidence": [
+    {
+      "id": "凭证甲",
+      "level": "SOURCE_BUILD",
+      "source": "虚构字段说明",
+      "summary": "演示原项链接及具体定位。",
+      "href": "https://docs.python.org/3/library/json.html#basic-usage",
+      "locator": "文档的 Basic Usage 小节",
+      "limitation": "只是文档引用，不是测试通过证据。",
+      "items": [
+        {
+          "title": "关联字段",
+          "body": "此处列出假想检查项目，不声称已经执行。"
+        }
+      ]
+    },
+    {
+      "id": "凭证乙",
+      "level": "RUNTIME_UI",
+      "source": "虚构离线工作记录",
+      "summary": "演示不能直达原项时的清单。",
+      "locator": "记录日期：示例；第2条／异常提示",
+      "accessNote": "未提供可访问原项；按日期、条目与内容核对。",
+      "limitation": "未运行服务，不代表真实交互验收。"
+    }
+  ],
   "evidenceLayers": [
     {
       "level": "SOURCE_BUILD",

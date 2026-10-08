@@ -94,17 +94,59 @@ function revealAnchor(hash) {
   try { id = decodeURIComponent(hash.slice(1)); } catch { return; }
   const target = document.getElementById(id);
   if (!target) return;
+  if (target.tagName === 'DETAILS') target.open = true;
   for (let parent = target.parentElement; parent; parent = parent.parentElement) {
     if (parent.tagName === 'DETAILS') parent.open = true;
   }
   // Chapter navigation exposes its primary content, leaving optional deeper folds alone.
   target.querySelector(':scope > details[data-primary]')?.setAttribute('open', '');
   updateFoldCount();
+  requestAnimationFrame(() => { target.scrollIntoView({block:'start',behavior:'instant'}); updateReadingPosition(); });
 }
-document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', () => revealAnchor(link.getAttribute('href'))));
+document.addEventListener('click', event => {
+  const link = event.target.closest?.('a[href^="#"]');
+  if (!link || event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  if (link.closest('dialog') && drawer.open) drawer.close();
+  revealAnchor(link.getAttribute('href'));
+});
 addEventListener('hashchange', () => revealAnchor(location.hash));
-if (location.hash) revealAnchor(location.hash);
 updateFoldCount();
+
+const chapters = [...document.querySelectorAll('section[data-chapter]')];
+const chapterLinks = [...document.querySelectorAll('.nav a')];
+let readingFrame = null;
+function updateReadingPosition() {
+  const line = ($('.report-navigation')?.getBoundingClientRect().height || 0) + 24;
+  let current = chapters[0];
+  for (const chapter of chapters) {
+    if (chapter.getBoundingClientRect().top <= line) current = chapter;
+    else break;
+  }
+  if (!current) return;
+  if (scrollY > 0 && innerHeight + scrollY >= document.documentElement.scrollHeight - 2) current = chapters.at(-1);
+  const title = current.querySelector('h2')?.textContent.replace(/^\s*[\d.]+\s*/, '') || '';
+  $('#reading-position').textContent = `阅读位置 ${current.dataset.chapter} / ${chapters.length} · ${title}`;
+  chapterLinks.forEach(link => {
+    const active = link.getAttribute('href') === '#'+current.id;
+    const changed = active && !link.hasAttribute('aria-current');
+    if (active) link.setAttribute('aria-current','location');
+    else link.removeAttribute('aria-current');
+    if (changed) {
+      const nav = link.parentElement;
+      const box = link.getBoundingClientRect(), parent = nav.getBoundingClientRect();
+      if (box.left < parent.left || box.right > parent.right) nav.scrollLeft += box.left - parent.left - 12;
+    }
+  });
+}
+function scheduleReadingPosition() {
+  if (readingFrame !== null) return;
+  readingFrame = requestAnimationFrame(() => { readingFrame = null; updateReadingPosition(); });
+}
+addEventListener('scroll',scheduleReadingPosition,{passive:true});
+addEventListener('resize',scheduleReadingPosition);
+folds.forEach(fold => fold.addEventListener('toggle',scheduleReadingPosition));
+updateReadingPosition();
+if (location.hash) revealAnchor(location.hash);
 
 let foldState = null;
 addEventListener('beforeprint', () => {

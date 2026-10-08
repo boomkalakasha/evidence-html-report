@@ -85,7 +85,27 @@ td ul { padding-left: 18px; }
 .fold-body { padding: 0 0 10px; }
 .fold-body .grid { margin-top: 8px; }
 .fold-body .fold { margin-left: 12px; }
+.report-navigation { position: sticky; top: 0; z-index: 5; background: #f4f5f3; }
+.report-navigation .nav { position: static; }
+.js-enabled .reading-position { display: block; padding: 6px 12px 2px; font-size: 12px; color: #536578; }
+.nav a[aria-current] { background: #dce9f2; color: #143c60; }
+.outline-number { color: #537b99; font-variant-numeric: tabular-nums; font-size: .8em; margin-right: .45em; }
+.report-outline { margin: 14px 0 0; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.report-outline summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+.report-outline ul { list-style: none; padding: 8px 0 0; margin: 0; columns: 2; column-gap: 36px; }
+.report-outline li { break-inside: avoid; margin: 0 0 6px; line-height: 1.6; }
+.report-outline a { display: inline-block; padding: 3px 0; }
+.report-outline .outline-depth-1 { padding-left: 22px; font-size: 14px; }
+.report-outline .outline-depth-2 { padding-left: 42px; font-size: 13px; }
+.evidence-refs { font-size: 13px; color: #536578; margin: 10px 0; line-height: 1.8; }
+.evidence-table td:first-child { width: 38%; font-weight: 400; }
+.evidence-table td:first-child > strong { display: block; color: var(--accent); margin-bottom: 6px; }
+.evidence-table tr:target { background: #eef5fa; outline: 2px solid #86abc5; outline-offset: -2px; }
+.evidence-table tr,.fold { scroll-margin-top: 116px; }
+.verdict .blocker h3 { font-size: 15px; color: #3c566e; }
 @media(max-width:760px) {
+  .report-outline ul { columns: 1; }
+  .evidence-table td:first-child { width: auto; }
   .shell { padding: 16px; }
   .hero { padding: 10px 0 20px; }
   .section { padding: 20px; }
@@ -105,6 +125,7 @@ td ul { padding-left: 18px; }
   .content-table td::before { content: attr(data-label); display: block; color: #536578; font-size: 12px; font-weight: 400; }
 }
 @media print {
+  .outline-number { color: #000; }
   .hero { padding: 0 0 16px; }
   .hero h1 { font-size: 23pt; }
   .verdict { display: block; background: #fff; border: 1px solid #bbb; margin: 16px 0; }

@@ -53,6 +53,73 @@ def render(data):
 
 
 class BuilderTests(unittest.TestCase):
+    def test_numbered_outline_matches_chapters_and_nested_details(self):
+        data = sample()
+        data['sections'][0]['folds'] = [{'title': '字段明细', 'items': ['编号'], 'folds': [{'title':'异常明细','items':['超时']}]}]
+        output = render(data)
+        self.assertIn('data-chapter="2"', output)
+        self.assertIn('href="#outline-2-1"', output)
+        self.assertIn('href="#outline-2-1-1"', output)
+        self.assertIn('id="outline-2-1-1"', output)
+        self.assertIn('2.1.1', output)
+        self.assertIn('id="reading-position"', output)
+
+    def test_generated_anchors_do_not_collide_with_user_ids(self):
+        data = sample()
+        data['sections'][1]['id'] = 'outline-2-1'
+        data['sections'][0]['folds'] = [{'title':'明细','items':['内容']}]
+        class IDs(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.ids=[]; self.refs=[]
+            def handle_starttag(self, tag, attrs):
+                values = dict(attrs)
+                if 'id' in values: self.ids.append(values['id'])
+                if values.get('href','').startswith('#'): self.refs.append(values['href'][1:])
+        parser = IDs(); parser.feed(render(data))
+        self.assertEqual(len(parser.ids), len(set(parser.ids)))
+        self.assertTrue(all(ref in parser.ids for ref in parser.refs))
+
+    def test_original_evidence_links_and_fallback_inventory(self):
+        data = sample()
+        data['evidence'][0].update(href='https://example.com/commit/123#L10', locator='Result.java 第10行', items=[{'title':'入口存在','body':'仅证明源码入口'}])
+        data['evidence'].append({'id':'证据二','level':'SOURCE_BUILD','source':'旧验证记录','summary':'记录了三项检查','locator':'2026-10-07 / 检查1至3','accessNote':'未提供可访问原项，需按日期核对'})
+        data['verdict']['evidence'] = ['证据一','证据二']
+        output = render(data)
+        self.assertIn('href="https://example.com/commit/123#L10"', output)
+        self.assertIn('href="#evidence-1"', output)
+        self.assertIn('id="evidence-2"', output)
+        self.assertIn('未提供可访问原项，需按日期核对', output)
+        self.assertIn('2026-10-07 / 检查1至3', output)
+        self.assertIn('证据清单与原项入口', output)
+        self.assertIn('入口存在', output)
+
+    def test_context_evidence_references_reject_missing_ids(self):
+        for location in ('verdict','section','card','layer','fold'):
+            data = sample()
+            targets={'verdict':data['verdict'],'section':data['sections'][0],'card':data['responsibilities'][0]}
+            data['evidenceLayers']=[{'level':'SOURCE_BUILD','status':'verified','reason':'范围说明'}]
+            targets['layer']=data['evidenceLayers'][0]
+            data['sections'][0]['folds']=[{'title':'明细','items':[]}]
+            targets['fold']=data['sections'][0]['folds'][0]
+            targets[location]['evidence']=['不存在']
+            with self.subTest(location=location), self.assertRaisesRegex(ValueError,'证据'):
+                builder.validate(data)
+
+    def test_evidence_links_and_item_shapes_are_validated(self):
+        for field,value in [('href','javascript:alert(1)'),('locator',[]),('items',[None])]:
+            data=sample(); data['evidence'][0][field]=value
+            with self.subTest(field=field), self.assertRaises(ValueError): builder.validate(data)
+        data=sample()
+        data['evidenceLayers']=[{'level':'RUNTIME_UI','status':'verified','reason':'不能借用源码证明','evidence':['证据一']}]
+        with self.assertRaisesRegex(ValueError,'证据'): builder.validate(data)
+
+    def test_evidence_inventory_preserves_each_result_and_limit(self):
+        data=sample()
+        data['evidence'][0]['items']=[{'title':'成功输入','body':'返回编号','status':'verified'},{'title':'数据核对','body':'尚无执行记录','status':'not_run'}]
+        output=render(data)
+        table=output.split('class="content-table evidence-table"',1)[1].split('</table>',1)[0]
+        for expected in ('成功输入','已验证','数据核对','未执行','尚无执行记录','尚未进行真实联调'): self.assertIn(expected,table)
+
     def test_content_is_readable_without_javascript_and_structure_is_chinese(self):
         html = render(sample())
         text = VisibleText()
@@ -202,7 +269,7 @@ class BuilderTests(unittest.TestCase):
         data['sections'][0]['folds'] = [{'title':'网址 https://example.com', 'items':['正文']}]
         output = render(data)
         button = output.split('class="finding"',1)[1].split('</button>',1)[0]
-        summary = output.split('<summary>网址',1)[1].split('</summary>',1)[0]
+        summary = next(part.rsplit('<summary>',1)[1] for part in output.split('</summary>') if '<summary>' in part and '网址 https://example.com' in part)
         self.assertNotIn('<a ',button)
         self.assertNotIn('<a ',summary)
 

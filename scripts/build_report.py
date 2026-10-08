@@ -15,7 +15,7 @@ LAYERS = {"SOURCE_BUILD": "源码与构建", "RUNTIME_UI": "运行与交互", "D
 STATUSES = {"implemented": "已实现", "complete": "已完成", "completed": "已完成", "partial": "部分实现", "drift": "存在偏离", "missing": "未实现", "unverified": "待验证", "verified": "已验证", "not_run": "未执行", "not applicable": "不适用", "not_applicable": "不适用", "unknown": "待确认", "blocked": "受阻"}
 FACTS = {"current": "当前事实", "fact": "当前事实", "historical": "历史事实", "inference": "推断", "unverified": "待验证", "planned": "未来方案"}
 VERDICTS = {"conditional pass": "有条件通过", "pass": "通过", "fail": "未通过", "assessment": "评估结论"}
-RESERVED_IDS = {"overview", "evidence-layers", "findings-section", "print-findings", "appendix", "responsibilities", "required-modules", "future-modules", "other-modules", "metrics", "drawer", "report-data", "search", "close", "resize", "drawer-body", "count", "empty", "status-buttons", "finding-rows", "term-popover", "reset"}
+RESERVED_IDS = {"overview", "evidence-layers", "findings-section", "print-findings", "appendix", "responsibilities", "required-modules", "future-modules", "other-modules", "metrics", "drawer", "report-data", "search", "close", "resize", "drawer-body", "count", "empty", "status-buttons", "finding-rows", "term-popover", "reset", "fold-status", "report-outline", "reading-position"}
 
 
 def esc(value) -> str:
@@ -135,7 +135,10 @@ def validate(data: dict) -> None:
             raise ValueError("来源链接需有效 href 与描述性 label")
     evidence_ids = set()
     for evidence in data["evidence"]:
-        text_fields(evidence, ("id", "level", "source", "summary", "date", "scope", "limitation", "factKind"), "证据", ("id", "level", "source", "summary"))
+        text_fields(evidence, ("id", "level", "source", "summary", "date", "scope", "limitation", "factKind", "href", "locator", "accessNote"), "证据", ("id", "level", "source", "summary"))
+        if "href" in evidence and not safe_url(evidence["href"]):
+            raise ValueError("证据原项链接无效或不允许")
+        card_items(evidence.get("items", []), "证据.items")
         if not isinstance(evidence, dict) or any(not evidence.get(key) for key in ("id", "level", "source", "summary")):
             raise ValueError("每条证据需包含 id、level、source、summary")
         if evidence["id"] in evidence_ids:
@@ -222,18 +225,57 @@ def validate(data: dict) -> None:
         if not isinstance(layer, dict) or layer.get("level") not in LAYERS or layer["level"] in seen_layers or not layer.get("status") or not layer.get("reason"):
             raise ValueError("证据层需包含唯一标准 level、status 与 reason")
         seen_layers.add(layer["level"])
+        string_list(layer.get('evidence', []), '证据层.evidence')
+        if any(next(item['level'] for item in data['evidence'] if item['id'] == ref) != layer['level'] for ref in layer.get('evidence', []) if ref in evidence_ids):
+            raise ValueError("证据层不能引用其他层的证据")
+
+    def references(value, location):
+        if isinstance(value, dict):
+            if 'evidence' in value:
+                string_list(value['evidence'], location + '.evidence')
+                if any(ref not in evidence_ids for ref in value['evidence']):
+                    raise ValueError(location + ' 引用了不存在的证据')
+            for key, nested in value.items():
+                if key != 'evidence': references(nested, location + '.' + key)
+        elif isinstance(value, list):
+            for index, nested in enumerate(value): references(nested, f'{location}[{index}]')
+    for key, value in data.items():
+        if key != 'evidence': references(value, key)
+    for evidence in data['evidence']:
+        references(evidence.get('items', []), '证据.items')
 
 
 class Renderer:
     def __init__(self, data):
         self.data = data
         self.evidence = {item["id"]: item for item in data["evidence"]}
+        self.ids = set(RESERVED_IDS) | {section.get('id', f'section-{i+1}') for i, section in enumerate(data.get('sections', []))}
+        self.evidence_anchors = {item['id']: self.unique_id(f'evidence-{i+1}') for i, item in enumerate(data['evidence'])}
+        self.outline = []
         self.terms = {}
         for index, term in enumerate(data.get("glossary", [])):
             for label in [term["term"], *term.get("aliases", [])]:
                 self.terms[label.casefold()] = (index, term)
         names = sorted(self.terms, key=len, reverse=True)
         self.pattern = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(name) for name in names) + r")(?![A-Za-z0-9_])", re.I) if names else None
+
+    def unique_id(self, preferred):
+        candidate, suffix = preferred, 2
+        while candidate in self.ids:
+            candidate = f'{preferred}-{suffix}'; suffix += 1
+        self.ids.add(candidate)
+        return candidate
+
+    def number(self, number):
+        return f'<span class="outline-number">{esc(number)}</span> '
+
+    def heading(self, title, sid, number):
+        self.outline.append((sid, str(number), title))
+        return f'<h2>{self.number(number)}{self.text(title)}</h2>'
+
+    def refs(self, refs):
+        if not refs: return ''
+        return '<div class="evidence-refs"><span>依据：</span>' + '、'.join(self.link({'label':ref,'href':'#'+self.evidence_anchors[ref]}) for ref in refs) + '</div>'
 
     def plain(self, value, focusable=True):
         source = str(value if value is not None else "")
@@ -278,6 +320,7 @@ class Renderer:
             result += self.items(value["bullets"])
         if value.get("links"):
             result += '<ul class="links">' + "".join(f'<li>{self.link(link)}</li>' for link in value["links"]) + "</ul>"
+        result += self.refs(value.get('evidence', []))
         return result
 
     def status(self, value):
@@ -309,7 +352,7 @@ class Renderer:
             content += self.items(item["modules"])
         return f'<article class="item">{content}</article>'
 
-    def block(self, section):
+    def block(self, section, number=''):
         kind = section.get("kind", "cards")
         if kind == "table":
             head = "".join(f"<th scope=\"col\">{self.text(cell)}</th>" for cell in section["columns"])
@@ -330,26 +373,54 @@ class Renderer:
         else:
             body = f'<div class="grid {"checklist" if kind == "checklist" else ""}">' + "".join(self.card(item) for item in section.get("items", [])) + "</div>"
         body += self.rich(section)
-        for fold in section.get("folds", []):
+        for index, fold in enumerate(section.get("folds", [])):
+            subnumber = f'{number}.{index+1}'
+            sid = self.unique_id('outline-' + subnumber.replace('.', '-'))
+            self.outline.append((sid, subnumber, fold['title']))
             summary = self.rich(fold.get("summary", ""))
-            body += self.fold(fold["title"], summary + self.block(fold), fold.get("open", False))
+            body += self.fold(fold["title"], summary + self.block(fold, subnumber), fold.get("open", False), sid=sid, number=subnumber)
         return body
 
-    def fold(self, title, body, opened=False, primary=False):
-        return f'<details class="fold" data-fold{" data-primary" if primary else ""}{" open" if opened else ""}><summary>{self.text(title, False)}</summary><div class="fold-body">{body}</div></details>'
+    def fold(self, title, body, opened=False, primary=False, sid=None, number=''):
+        anchor = f' id="{esc(sid)}"' if sid else ''
+        label = self.number(number) if number else ''
+        return f'<details class="fold"{anchor} data-fold{" data-primary" if primary else ""}{" open" if opened else ""}><summary>{label}{self.text(title, False)}</summary><div class="fold-body">{body}</div></details>'
 
-    def section(self, section, section_id):
-        body = self.block(section)
+    def section(self, section, section_id, number):
+        heading = self.heading(section['title'], section_id, number)
+        body = self.block(section, str(number))
         if section.get("collapsed"):
-            body = self.fold(section.get("foldLabel", "查看完整内容"), body, primary=True)
-        return f'<section class="section" id="{esc(section_id)}"><h2>{self.text(section["title"])}</h2><div class="section-summary">{self.rich(section.get("summary", ""))}</div>{body}</section>'
+            body = self.fold(section.get("foldLabel", "查看完整内容"), body, primary=True, number=str(number))
+        return f'<section class="section" id="{esc(section_id)}" data-chapter="{number}">{heading}<div class="section-summary">{self.rich(section.get("summary", ""))}</div>{body}</section>'
 
     def evidence_html(self, evidence):
         layer = LAYERS.get(evidence["level"], translated(evidence["level"], {}, "其他证据"))
-        meta = [evidence["source"]] + [f"{label}：{evidence[key]}" for key, label in (("date", "日期"), ("scope", "范围"), ("limitation", "限制")) if evidence.get(key)]
+        meta = [evidence["source"]] + [f"{label}：{evidence[key]}" for key, label in (("locator", "定位"), ("date", "日期"), ("scope", "范围"), ("limitation", "限制")) if evidence.get(key)]
         if evidence.get("factKind"):
             meta.append("性质：" + self.fact(evidence["factKind"]))
-        return f'<article class="evidence"><strong>{self.text(evidence["id"])} · {esc(layer)}</strong><p>{self.text(evidence["summary"])}</p>' + "".join(f'<p class="evidence-meta muted">{self.text(value)}</p>' for value in meta) + "</article>"
+        entry = self.link({'label':'打开原项详情','href':evidence['href']}) if evidence.get('href') else self.text(evidence.get('accessNote') or '未提供可跳转原项；请按来源与定位核对。')
+        return f'<article class="evidence"><strong>{self.text(evidence["id"])} · {esc(layer)}</strong><p>{self.text(evidence["summary"])}</p>' + "".join(f'<p class="evidence-meta muted">{self.text(value)}</p>' for value in meta) + f'<p>{entry}</p>' + self.evidence_items(evidence.get('items', [])) + "</article>"
+
+    def evidence_items(self, items):
+        if not items: return ''
+        return '<ol class="evidence-items">' + ''.join('<li>'+self.card(item)+'</li>' for item in items) + '</ol>'
+
+    def evidence_index(self):
+        columns = ['编号与证明内容', '来源与原项入口', '范围与限制']
+        rows = []
+        for evidence in self.data['evidence']:
+            items = self.evidence_items(evidence.get('items', []))
+            first = f'<strong>{self.text(evidence["id"])}</strong>{self.rich(evidence["summary"])}{items}'
+            entry = self.link({'label':'打开原项详情','href':evidence['href']}) if evidence.get('href') else self.text(evidence.get('accessNote') or '未提供可跳转原项；请按来源与定位核对。')
+            second = self.rich(evidence['source']) + self.rich(evidence.get('locator', '')) + f'<p>{entry}</p>'
+            if evidence.get('href') and evidence.get('accessNote'): second += self.rich(evidence['accessNote'])
+            meta = [LAYERS.get(evidence['level'], '其他证据')]
+            meta += [f'{label}：{evidence[key]}' for key, label in (('date','日期'),('scope','范围'),('limitation','限制')) if evidence.get(key)]
+            if evidence.get('factKind'): meta.append('性质：' + self.fact(evidence['factKind']))
+            cells = ''.join(f'<td data-label="{esc(label)}">{value}</td>' for label,value in zip(columns,(first,second,self.items(meta))))
+            rows.append(f'<tr id="{self.evidence_anchors[evidence["id"]]}" tabindex="-1">{cells}</tr>')
+        head = ''.join(f'<th scope="col">{label}</th>' for label in columns)
+        return '<div class="table-wrap" role="region" aria-label="证据清单" tabindex="0"><table class="content-table evidence-table"><thead><tr>'+head+'</tr></thead><tbody>'+''.join(rows)+'</tbody></table></div>'
 
     def detail(self, finding):
         body = f'<article class="detail"><h2>{self.text(finding["id"] + " · " + finding["title"])}</h2><p>{self.badge(finding["status"])} {self.text(finding.get("owner", "待指定责任方"))} · {self.text(finding.get("priority", "待定优先级"))}</p><p>{self.text(finding["summary"])}</p>'
@@ -380,15 +451,17 @@ class Renderer:
         if data["findings"]:
             nav.append(("findings-section", "发现与行动"))
         nav.extend([("evidence-layers", "证据范围"), ("appendix", "背景与证据附录")])
+        chapters = {sid: index+1 for index, (sid, _) in enumerate(nav)}
         report_type = {"audit": "审计评估", "brief": "技术方案简报", "handoff": "场景交接"}[data.get("reportType", "audit")]
         meta = ["生成时间：" + data["generatedAt"]] + (["读者：" + data["audience"]] if data.get("audience") else []) + data.get("scope", [])
         content = f'<header class="hero"><h1>{self.text(data["title"])}</h1>{self.rich(data.get("subtitle", ""))}<div class="meta"><span>{report_type}</span>' + "".join(f"<span>{self.text(value)}</span>" for value in meta) + "</div></header>"
-        content += '<nav class="nav no-print" aria-label="报告章节">' + "".join(f'<a href="#{esc(sid)}">{esc(title)}</a>' for sid, title in nav) + "</nav>"
+        content += '<div class="report-navigation no-print"><div class="reading-position js-only" id="reading-position" role="status">阅读位置 1 / '+str(len(nav))+' · 核心结论</div><nav class="nav" aria-label="报告章节">' + "".join(f'<a href="#{esc(sid)}">{self.number(chapters[sid])}{esc(title)}</a>' for sid, title in nav) + "</nav></div>"
+        content += '<!-- report-outline -->'
         verdict_label = VERDICTS.get(verdict["label"].lower(), verdict["label"])
-        content += f'<section class="verdict" id="overview"><article class="card"><h2>核心结论</h2><div class="verdict-label">{self.text(verdict_label)}</div>{self.rich(verdict["summary"])}{self.rich(verdict)}</article><article class="card blocker"><h2>当前最大阻断</h2>{self.rich(verdict.get("blocker") or "未登记阻断；请结合证据范围判断。")}</article></section>'
+        content += f'<section class="verdict" id="overview" data-chapter="1"><article class="card">{self.heading("核心结论","overview",1)}<div class="verdict-label">{self.text(verdict_label)}</div>{self.rich(verdict["summary"])}{self.rich(verdict)}</article><article class="card blocker"><h3>当前最大阻断</h3>{self.rich(verdict.get("blocker") or "未登记阻断；请结合证据范围判断。")}</article></section>'
         if data.get("metrics"):
             content += '<section class="metrics" id="metrics" aria-label="实测统计">' + "".join(f'<article class="card metric"><small>{self.text(metric["label"])}</small><strong>{self.text(metric["value"])}</strong><span class="muted">{self.text(metric.get("note", ""))}</span></article>' for metric in data["metrics"]) + "</section>"
-        content += "".join(self.section(section, sid) for section, sid in sections)
+        content += "".join(self.section(section, sid, chapters[sid]) for section, sid in sections)
         templates, print_content = [], []
         if data["findings"]:
             statuses = list(dict.fromkeys(self.status(finding["status"]) for finding in data["findings"]))
@@ -400,7 +473,7 @@ class Renderer:
                 detail = self.detail(finding)
                 templates.append(f'<template data-finding="{esc(finding["id"])}">{detail}</template>')
                 print_content.append(f'<div class="print-finding">{detail}</div>')
-            content += f'<section class="section" id="findings-section"><div class="section-head"><h2>发现与行动</h2><small id="count">显示 {len(rows)} / {len(rows)} 项</small></div><div class="tools no-print"><input id="search" aria-label="搜索发现" placeholder="搜索标题、结论、责任方或证据"><button data-status-filter="" class="active" aria-pressed="true">全部</button><span id="status-buttons">{buttons}</span><button id="reset">清空筛选</button></div><div class="table-wrap" role="region" aria-label="问题台账" tabindex="0"><table><thead><tr><th scope="col">问题</th><th scope="col">状态</th><th scope="col">判断</th><th scope="col">责任与优先级</th></tr></thead><tbody id="finding-rows">{"".join(rows)}</tbody></table><p class="empty muted" id="empty" hidden>没有匹配项，请清空筛选后重试。</p></div></section>'
+            content += f'<section class="section" id="findings-section" data-chapter="{chapters["findings-section"]}"><div class="section-head">{self.heading("发现与行动", "findings-section", chapters["findings-section"])}<small id="count">显示 {len(rows)} / {len(rows)} 项</small></div><div class="tools no-print"><input id="search" aria-label="搜索发现" placeholder="搜索标题、结论、责任方或证据"><button data-status-filter="" class="active" aria-pressed="true">全部</button><span id="status-buttons">{buttons}</span><button id="reset">清空筛选</button></div><div class="table-wrap" role="region" aria-label="问题台账" tabindex="0"><table><thead><tr><th scope="col">问题</th><th scope="col">状态</th><th scope="col">判断</th><th scope="col">责任与优先级</th></tr></thead><tbody id="finding-rows">{"".join(rows)}</tbody></table><p class="empty muted" id="empty" hidden>没有匹配项，请清空筛选后重试。</p></div></section>'
             content += '<section class="section print-only" id="print-findings"><h2>问题详情、行动与证据</h2>' + "".join(print_content) + "</section>"
             content += '<noscript><section class="section no-print"><h2>问题详情、行动与证据</h2>' + "".join(f'<details class="fold"><summary>{esc(finding["title"])}</summary><div class="fold-body">{self.detail(finding)}</div></details>' for finding in data["findings"]) + "</section></noscript>"
         explicit_layers = {layer["level"]: layer for layer in data.get("evidenceLayers", [])}
@@ -410,26 +483,39 @@ class Renderer:
             count = sum(evidence["level"] == key for evidence in data["evidence"])
             status = self.status(layer["status"]) if layer else "已登记证据" if count else "待确认"
             reason = layer["reason"] if layer else f"登记 {count} 条证据；不等于该层验收通过。" if count else "未登记该层证据或不适用说明。"
-            layers.append(f'<article class="layer"><strong>{title}</strong><span class="badge">{esc(status)}</span><p>{self.text(reason)}</p></article>')
-        content += '<section class="section" id="evidence-layers"><h2>证据范围</h2><div class="layer-grid">' + "".join(layers) + "</div></section>"
+            refs = layer.get('evidence') if layer and 'evidence' in layer else [item['id'] for item in data['evidence'] if item['level'] == key]
+            reference = self.refs(refs) if refs else '<p class="muted">未登记逐项证据；以上仅为范围说明。</p>'
+            layers.append(f'<article class="layer"><strong>{title}</strong><span class="badge">{esc(status)}</span><p>{self.text(reason)}</p>{reference}</article>')
+        number = chapters['evidence-layers']
+        content += f'<section class="section" id="evidence-layers" data-chapter="{number}">{self.heading("证据范围","evidence-layers",number)}<div class="layer-grid">' + "".join(layers) + "</div>"
+        if data['evidence']:
+            subnumber = str(number) + '.1'
+            sid = self.unique_id('outline-' + subnumber.replace('.', '-'))
+            self.outline.append((sid,subnumber,'证据清单与原项入口'))
+            content += self.fold('证据清单与原项入口', '<p class="muted">逐项列出证明内容、原始入口与限制；点击结论旁的依据编号可直接定位本表。</p>' + self.evidence_index(), sid=sid, number=subnumber)
+        content += '</section>'
         appendices = list(data.get("appendices", []))
         if data.get("glossary"):
             appendices.append({"title": "术语表", "body": "正文虚线词可悬停或用键盘聚焦查看解释；完整释义如下。", "items": [f"{term['term']}{'（' + term['full'] + '）' if term.get('full') else ''}：{term['explanation']}" for term in data["glossary"]]})
         if data.get("sources"):
             appendices.append({"title": "来源索引", "items": [{"body": " · ".join(source[key] for key in ("ref", "note") if source.get(key)), "links": [{"label": source["label"], "href": source["href"]}]} if source.get("href") else " · ".join(source[key] for key in ("label", "ref", "note") if source.get(key)) for source in data["sources"]]})
-        # Include the whole evidence registry, including records not linked to findings.
-        if data["evidence"]:
-            appendices.append({"title": "证据登记", "evidence": data["evidence"]})
+        appendix_number = chapters['appendix']
+        appendix_heading = self.heading('背景与证据附录','appendix',appendix_number)
         folds = []
-        for appendix in appendices:
+        for index, appendix in enumerate(appendices):
+            subnumber = f'{appendix_number}.{index+1}'
+            sid = self.unique_id('outline-' + subnumber.replace('.', '-'))
+            self.outline.append((sid,subnumber,appendix['title']))
             body = self.rich(appendix.get("body", "")) + self.rich(appendix) + self.items(appendix.get("items", []))
-            body += "".join(self.evidence_html(evidence) for evidence in appendix.get("evidence", []))
-            folds.append(self.fold(appendix["title"], body))
-        content += '<section class="section" id="appendix"><h2>背景与证据附录</h2>' + ("".join(folds) or '<p class="muted">未提供附录材料。</p>') + "</section>"
+            folds.append(self.fold(appendix["title"], body, sid=sid, number=subnumber))
+        content += f'<section class="section" id="appendix" data-chapter="{appendix_number}">{appendix_heading}' + ("".join(folds) or '<p class="muted">未提供附录材料。</p>') + "</section>"
+        entries = ''.join(f'<li class="outline-depth-{number.count(".")}"><a href="#{esc(sid)}">{self.number(number)}{esc(title)}</a></li>' for sid,number,title in self.outline)
+        outline = '<details class="report-outline no-print" id="report-outline"><summary>查看完整目录 · 共'+str(len(nav))+'章</summary><nav aria-label="完整目录"><ul>'+entries+'</ul></nav></details>'
+        content = content.replace('<!-- report-outline -->', outline)
         content += f'<footer>{self.text(data["title"])} · {self.text(data["generatedAt"])} · 判断以顶部范围及证据限制为准。</footer>'
         if 'data-fold' in content:
             controls = '<div class="reading-tools js-only no-print"><span id="fold-status" aria-live="polite"></span><button data-fold-action="expand">展开全部详情</button><button data-fold-action="collapse">收起全部详情</button></div>'
-            content = content.replace('</nav>', '</nav>' + controls, 1)
+            content = content.replace('</details>', '</details>' + controls, 1)
         payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
         css = (ROOT / "assets/report.css").read_text(encoding="utf-8")
         js = (ROOT / "assets/report.js").read_text(encoding="utf-8")
