@@ -1,0 +1,16 @@
+{
+  "title": "发布准备核验示例", "generatedAt": "2026-10-08", "reportType": "audit",
+  "scope": ["脱敏虚构案例，不代表真实环境"],
+  "verdict": {"label": "待补业务与发布证据", "summary": "构建记录与交互记录已登记，但仍缺少业务核对和回滚演练。", "blocker": "上线前需核对业务结果并确认回滚步骤。"},
+  "findings": [
+    {"id": "问题一", "title": "构建结果已登记", "status": "implemented", "priority": "P2", "owner": "研发组", "summary": "编译通过，仅证明源码构建。", "assessment": ["构建记录不能证明线上实例已更新。"], "actions": ["交付产物时登记版本。"], "evidence": ["证据一"], "factKind": "historical"},
+    {"id": "问题二", "title": "页面错误处理已登记", "status": "partial", "priority": "P1", "owner": "前端组", "summary": "页面可显示错误，尚待独立业务核对。", "assessment": ["页面返回结果与持久化结果必须属于同一任务。"], "actions": ["核对接口、日志和存储结果。"], "evidence": ["证据二"], "factKind": "current"},
+    {"id": "问题三", "title": "回滚演练未执行", "status": "unverified", "priority": "P1", "owner": "发布组", "summary": "未登记演练结果。", "actions": ["演练并记录恢复后的版本和数据状态。"], "evidence": [], "evidenceGap": "缺少回滚执行与结果核对记录。", "factKind": "unverified"}
+  ],
+  "evidence": [
+    {"id": "证据一", "level": "SOURCE_BUILD", "source": "示例构建记录", "summary": "构建成功。", "date": "2026-10-08", "scope": "虚构示例版本", "limitation": "未验证实际部署。"},
+    {"id": "证据二", "level": "RUNTIME_UI", "source": "示例浏览器观察", "summary": "模拟页面的失败提示可见。", "limitation": "模拟交互不能替代真实业务验收。"}
+  ],
+  "glossary": [{"term": "API", "full": "Application Programming Interface", "explanation": "供页面或其他服务请求数据和操作的接口。"}],
+  "appendices": [{"title": "背景说明", "body": "本例专门验证台账、抽屉、筛选、证据分层与打印。", "items": ["真实发布需另行核验环境、版本和业务结果。"]}]
+}

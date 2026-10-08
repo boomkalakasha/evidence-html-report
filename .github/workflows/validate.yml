@@ -1,0 +1,25 @@
+name: 技能与报告验证
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate-report:
+    name: 内容与浏览器回归
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: 标准库回归与脚本语法
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 scripts/build_report.py --self-test
+          node --check assets/report.js
+      - name: 安装浏览器测试依赖
+        run: |
+          python3 -m venv "$RUNNER_TEMP/report-tests"
+          "$RUNNER_TEMP/report-tests/bin/python" -m pip install -r requirements-dev.txt
+          "$RUNNER_TEMP/report-tests/bin/python" -m playwright install --with-deps chromium
+      - name: 真实浏览器回归
+        run: '"$RUNNER_TEMP/report-tests/bin/python" tests/browser_checks.py'

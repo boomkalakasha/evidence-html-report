@@ -1,0 +1,66 @@
+{
+  "title": "任务服务拆分技术简报",
+  "subtitle": "脱敏示例：从真实入口到结果确认，再到职责与验收",
+  "generatedAt": "2026-10-08",
+  "reportType": "brief",
+  "audience": "技术负责人、研发与测试",
+  "scope": ["示例版本 1.0", "所有服务、路径和证据均为虚构示例"],
+  "verdict": {
+    "label": "先完成一条可验收的调用链",
+    "summary": "入口接收任务，调度适配器向工作服务发起 HTTP 请求，结果通过回调写入状态存储。按职责分开实现，以成功与异常路径的结果核对作为验收。",
+    "blocker": "当前仅有示例设计；未执行真实服务联调、业务核对或发布。"
+  },
+  "sections": [
+    {
+      "id": "scenario", "title": "真实场景与结果", "summary": "用一条完整路径约定双方的工作。",
+      "items": [{"title": "用户提交任务", "body": "用户选择输入并提交后，页面显示任务编号、处理状态和最终结果。", "acceptance": "成功可查看结果，失败可查看原因并重试。"}]
+    },
+    {
+      "id": "call-chain", "title": "入口、调用链与结果读回", "kind": "flow",
+      "summary": "这是设计拟定的顺序；各边保留调用方式，尚非运行证据。",
+      "steps": [
+        {"title": "/api/tasks", "body": "校验输入并生成 taskId", "edge": "本地调用"},
+        {"title": "TaskAdapter", "body": "按契约组装请求", "edge": "HTTP 请求"},
+        {"title": "WorkerService", "body": "处理任务并返回状态", "edge": "结果回调"},
+        {"title": "ResultStore", "body": "保存结果供页面读回"}
+      ]
+    },
+    {
+      "id": "contracts", "title": "契约与职责对照", "kind": "table",
+      "columns": ["环节", "输入与输出", "责任边界", "如何确认"],
+      "rows": [
+        ["入口", "input → taskId", "校验与任务登记", "无效输入被拒绝，重复请求可追溯"],
+        ["调度适配器", "taskId + input → 请求", "通信与异常映射", "请求契约与超时处理符合约定"],
+        ["结果回调", "taskId + result → 状态", "结果关联与持久化", "回调、日志和存储属于同一任务"]
+      ]
+    },
+    {
+      "id": "acceptance", "title": "实施与验收顺序", "kind": "checklist",
+      "items": [
+        {"title": "固定契约", "body": "确认输入、状态、错误和回调字段。", "owner": "双方研发", "acceptance": "成功和异常样例通过双方核对"},
+        {"title": "运行两端", "body": "从用户入口执行成功、超时和重复请求。", "owner": "集成测试", "dependency": "双方实现可运行", "acceptance": "任务标识贯穿请求、回调和日志"},
+        {"title": "核对用户结果", "body": "检查结果关联、存储和页面显示。", "owner": "业务验收", "acceptance": "页面、接口与持久化结果一致"}
+      ]
+    }
+  ],
+  "responsibilities": [
+    {"group": "入口与页面组", "mission": "任务登记与结果展示", "modules": ["输入校验", "状态读回"], "acceptance": "成功、空态和错误提示可理解"},
+    {"group": "工作服务组", "mission": "任务处理与结果回调", "acceptance": "超时、重试和重复回调有明确处理结果"}
+  ],
+  "modules": [
+    {"name": "固定契约与回调处理", "category": "required", "priority": "P1", "owner": "双方研发", "gap": "实现与运行证据尚未登记", "outcome": "一条入口到结果的完整路径", "acceptance": "结果能够关联并核对"},
+    {"name": "动态服务发现", "category": "future", "owner": "架构组", "gap": "当前规模不要求实现", "outcome": "后续按扩展需要评估"}
+  ],
+  "findings": [], "evidence": [],
+  "evidenceLayers": [
+    {"level": "SOURCE_BUILD", "status": "not_run", "reason": "这是设计示例，未检查源码或构建。"},
+    {"level": "RUNTIME_UI", "status": "not_run", "reason": "未运行真实服务；示例页面可读不证明业务联调。"},
+    {"level": "DATA_BUSINESS", "status": "not_run", "reason": "未核对真实业务或持久化结果。"},
+    {"level": "RELEASE_CUTOVER", "status": "not_applicable", "reason": "设计示例不涉及部署、迁移或切流。"}
+  ],
+  "glossary": [
+    {"term": "HTTP", "full": "Hypertext Transfer Protocol", "explanation": "本例中用于两服务之间发送请求和接收响应的通信协议。"},
+    {"term": "taskId", "explanation": "贯穿任务登记、请求、回调和结果查询的任务编号。"}
+  ],
+  "appendices": [{"title": "设计背景", "body": "示例展示内容组织与证据边界，不代表任何真实产品已实现。", "items": ["先验证一条完整调用链，再按证据决定是否扩展。"]}]
+}
