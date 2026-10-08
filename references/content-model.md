@@ -74,7 +74,16 @@
 - `modules[]`：`{name,category,priority,owner,gap,outcome,acceptance,dependency}`；`required`／`本次必做` 与 `future`／`后续预留` 分组，其余显示“其他模块”。
 - `appendices[]`：`{title,body,items}`，默认折叠，打印展开。
 - `sources[]`：`{label,ref,note}`，生成来源索引。
-- `glossary[]`：`{term,full?,explanation,aliases?}`；缩写含义必须有来源，别把一般英文结构词列成术语。
+- `glossary[]`：`{term,full?,explanation,aliases?,original?,source?,scopeNote?,evidence?,matchMode?}`。`explanation` 是通俗解释，`original` 是忠实原文摘录，填写原文必须有非空 `source`；`scopeNote` 说明归纳命名或时效等边界。`evidence` 引用同一证据清单并通向原项。所有字段是纯文本，不支持 HTML。
+- `requiredTerms[]`：明确承诺原文释义的关键项，以 `glossary[].term` 精确名称列出。每项须有非空 `full`（中文名称）、`original`、`source`；缺定义或没有在正文、表格／详情实际注释时阻止生成。术语表自身不计覆盖；没有列入本清单的旧术语继续兼容。这个门禁不能自动发现作者未登记的约定，作者仍须从用户请求逐项建立清单。
+
+单字母代号必须显式设置 `matchMode: "code"`，区分大小写，排除盘符 `C:/`／`C:\\`、带连字符或下划线的编号 `D-001`／`D_001`，一般边界也排除 `E01` 等证据编号。仍需核对同字母在不同语境中的含义；同一代号有冲突时改用完整名称／明确别名或定制就地说明，不把多种定义合并成一个术语。默认 `word` 模式保留普通术语及别名的完整单词匹配。
+
+```json
+{"requiredTerms":["A"],"glossary":[{"term":"A","full":"入口携带公共包","matchMode":"code","original":"A：入口启动时加载公共包。","explanation":"只启动入口进程，公共能力随入口加载。","source":"虚构设计说明第1项","scopeNote":"示例归纳的方案代号；不是正式版本。","evidence":["证据一"]}]}
+```
+
+原词下划线支持悬停、键盘聚焦和点击；短浮层提供预览，长内容可在释义弹窗完整阅读。弹窗可打开依据清单，关闭回到原词；无脚本点击原词跳到完整释义表。正文首次出现仍需常显中文名称及一句话关系。原文详情在打印展开，不能依赖悬停。完整虚构示例见 [关键代号释义示例](../examples/annotated-options.json)。
 
 ## 安全与兼容
 

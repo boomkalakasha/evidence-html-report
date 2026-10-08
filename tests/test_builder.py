@@ -53,6 +53,79 @@ def render(data):
 
 
 class BuilderTests(unittest.TestCase):
+    def annotated_sample(self):
+        data = sample()
+        data['sections'][1]['rows'] = [['A：入口携带能力包', '只启动入口进程']]
+        data['glossary'] = [{'term':'A','full':'入口携带能力包','explanation':'启动入口时一起装配公共能力。','original':'A：入口启动，能力包随入口加载。','source':'虚构设计记录第2项','matchMode':'code','evidence':['证据一']}]
+        data['requiredTerms'] = ['A']
+        return data
+
+    def test_required_definition_preserves_original_source_and_evidence(self):
+        output = render(self.annotated_sample())
+        self.assertIn('href="#term-detail-1"', output)
+        self.assertIn('原文摘录：', output)
+        self.assertIn('A：入口启动，能力包随入口加载。', output)
+        self.assertIn('虚构设计记录第2项', output)
+        self.assertIn('id="term-dialog"', output)
+        self.assertIn('href="#evidence-1"', output)
+
+    def test_required_definition_missing_or_unrendered_is_rejected(self):
+        for change in ('definition', 'occurrence'):
+            data = self.annotated_sample()
+            if change == 'definition': data['glossary'] = []
+            else: data['sections'][1]['rows'] = [['入口', '进程']]
+            with self.subTest(change=change), self.assertRaises(ValueError): render(data)
+
+    def test_required_definition_needs_raw_original_and_source(self):
+        for key in ('original','source','full'):
+            data = self.annotated_sample()
+            del data['glossary'][0][key]
+            with self.subTest(key=key), self.assertRaises(ValueError): render(data)
+
+    def test_single_letter_codes_do_not_annotate_paths_decision_or_evidence_ids(self):
+        data = self.annotated_sample()
+        data['requiredTerms'] = []
+        data['glossary'] = [dict(data['glossary'][0],term=code) for code in 'CDE']
+        renderer = builder.Renderer(data)
+        for text in ['C:/folder/report.md', 'C:\\folder\\report.md', 'D-001', 'E01/E02', 'a code']:
+            self.assertNotIn('class="term"', renderer.plain(text))
+        self.assertEqual(renderer.plain('C/D/E').count('class="term"'),3)
+
+    def test_null_required_fields_cannot_bypass_definition_gate(self):
+        for key in ('full','original','source'):
+            data=self.annotated_sample()
+            data['glossary'][0][key]=None
+            with self.subTest(key=key), self.assertRaises(ValueError): render(data)
+        data=self.annotated_sample()
+        data['requiredTerms']=[]
+        data['glossary'][0]['source']=None
+        with self.assertRaises(ValueError): render(data)
+
+    def test_single_letter_requires_explicit_code_mode(self):
+        data = self.annotated_sample()
+        del data['glossary'][0]['matchMode']
+        with self.assertRaises(ValueError): render(data)
+
+    def test_single_letter_alias_uses_same_code_mode_gate(self):
+        data=sample()
+        data['glossary']=[{'term':'方案丙','aliases':['C'],'explanation':'入口关系'}]
+        with self.assertRaises(ValueError): render(data)
+        data['glossary'][0]['matchMode']='code'
+        builder.validate(data)
+        renderer=builder.Renderer(data)
+        self.assertNotIn('class="term"',renderer.plain('C:/files/report.md'))
+        self.assertNotIn('class="term"',renderer.plain('c：普通字母'))
+        self.assertIn('class="term"',renderer.plain('C：方案原词'))
+
+    def test_original_text_is_safe_and_annotation_ids_avoid_collision(self):
+        data = self.annotated_sample()
+        data['glossary'][0]['original'] = '<script>alert("raw")</script>'
+        data['sections'][0]['id'] = 'term-detail-1'
+        output = render(data)
+        self.assertIn('id="term-detail-1-2"', output)
+        self.assertIn('&lt;script&gt;alert', output)
+        self.assertNotIn('<script>alert("raw")', output)
+
     def test_numbered_outline_matches_chapters_and_nested_details(self):
         data = sample()
         data['sections'][0]['folds'] = [{'title': '字段明细', 'items': ['编号'], 'folds': [{'title':'异常明细','items':['超时']}]}]
