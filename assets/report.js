@@ -53,6 +53,9 @@ resize.addEventListener('keydown', event => {
 });
 
 const popover = $('#term-popover');
+const termDialog = $('#term-dialog');
+let termFocus = null;
+let previewTerm = null;
 function showTerm(element) {
   const term = (data.glossary || [])[Number(element.dataset.glossary)];
   if (!term) return;
@@ -60,23 +63,71 @@ function showTerm(element) {
   const container = element.closest('dialog') || document.body;
   if (popover.parentElement !== container) container.append(popover);
   const heading = document.createElement('strong');
+  heading.className = 'term-preview-title';
   heading.textContent = term.term + (term.full ? ' · ' + term.full : '');
-  const description = document.createElement('span');
+  const description = document.createElement('p');
+  description.className = 'term-preview-explanation';
   description.textContent = term.explanation;
   popover.replaceChildren(heading, description);
+  if (term.original) {
+    const quote = document.createElement('blockquote');
+    quote.className = 'term-preview-quote';
+    quote.textContent = '原文：' + term.original;
+    const source = document.createElement('p');
+    source.className = 'term-preview-source';
+    const sourceLabel = term.source.split(/[\\/]/).at(-1);
+    source.textContent = '出处：' + (sourceLabel.length > 140 ? sourceLabel.slice(0,100) + '…' + sourceLabel.slice(-30) : sourceLabel);
+    popover.append(quote, source);
+  }
+  if (term.scopeNote) {
+    const note = document.createElement('p');
+    note.className = 'term-preview-scope';
+    note.textContent = '边界：' + term.scopeNote;
+    popover.append(note);
+  }
+  const hint = document.createElement('small');
+  hint.textContent = '此处为预览；点击原词查看完整原文、出处与依据';
+  popover.append(hint);
+  previewTerm?.removeAttribute('aria-describedby');
+  previewTerm = element;
+  element.setAttribute('aria-describedby', 'term-popover');
   popover.hidden = false;
   const rect = element.getBoundingClientRect();
   const box = popover.getBoundingClientRect();
   popover.style.left = Math.max(12, Math.min(innerWidth - box.width - 12, rect.left)) + 'px';
   popover.style.top = Math.max(8, Math.min(innerHeight - box.height - 8, rect.top > box.height + 18 ? rect.top - box.height - 10 : rect.bottom + 10)) + 'px';
 }
-function hideTerm() { popover.hidden = true; }
+function hideTerm() { popover.hidden = true; previewTerm?.removeAttribute('aria-describedby'); previewTerm = null; }
+
+document.addEventListener('click', event => {
+  const term = event.target.closest?.('a.term');
+  if (!term || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  const target = document.getElementById(term.getAttribute('href').slice(1));
+  if (!target) return;
+  event.preventDefault();
+  hideTerm();
+  termFocus = term;
+  const detail = target.cloneNode(true);
+  detail.removeAttribute('id');
+  $('#term-dialog-body').replaceChildren(detail);
+  termDialog.showModal();
+  $('#term-close').focus();
+});
+$('#term-close').addEventListener('click', () => termDialog.close());
+termDialog.addEventListener('close', () => { hideTerm(); termFocus?.focus(); termFocus = null; });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') hideTerm(); });
 document.addEventListener('mouseover', event => { const term = event.target.closest?.('.term'); if (term) showTerm(term); });
 document.addEventListener('mouseout', event => { if (event.target.closest?.('.term')) hideTerm(); });
 document.addEventListener('focusin', event => { const term = event.target.closest?.('.term'); if (term) showTerm(term); });
 document.addEventListener('focusout', event => { if (event.target.closest?.('.term')) hideTerm(); });
 addEventListener('resize', hideTerm);
-addEventListener('scroll', hideTerm, true);
+addEventListener('scroll', () => {
+  const term = previewTerm || document.activeElement;
+  if (!term?.matches('.term')) { hideTerm(); return; }
+  const rect = term.getBoundingClientRect();
+  if (rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth) showTerm(term);
+  else hideTerm();
+}, true);
 
 document.documentElement.classList.add('js-enabled');
 const folds = [...document.querySelectorAll('details[data-fold]')];
@@ -106,6 +157,7 @@ function revealAnchor(hash) {
 document.addEventListener('click', event => {
   const link = event.target.closest?.('a[href^="#"]');
   if (!link || event.defaultPrevented || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  if (link.closest('#term-dialog') && termDialog.open) { termFocus = null; termDialog.close(); }
   if (link.closest('dialog') && drawer.open) drawer.close();
   revealAnchor(link.getAttribute('href'));
 });

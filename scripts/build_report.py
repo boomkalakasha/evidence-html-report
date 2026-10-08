@@ -15,7 +15,7 @@ LAYERS = {"SOURCE_BUILD": "源码与构建", "RUNTIME_UI": "运行与交互", "D
 STATUSES = {"implemented": "已实现", "complete": "已完成", "completed": "已完成", "partial": "部分实现", "drift": "存在偏离", "missing": "未实现", "unverified": "待验证", "verified": "已验证", "not_run": "未执行", "not applicable": "不适用", "not_applicable": "不适用", "unknown": "待确认", "blocked": "受阻"}
 FACTS = {"current": "当前事实", "fact": "当前事实", "historical": "历史事实", "inference": "推断", "unverified": "待验证", "planned": "未来方案"}
 VERDICTS = {"conditional pass": "有条件通过", "pass": "通过", "fail": "未通过", "assessment": "评估结论"}
-RESERVED_IDS = {"overview", "evidence-layers", "findings-section", "print-findings", "appendix", "responsibilities", "required-modules", "future-modules", "other-modules", "metrics", "drawer", "report-data", "search", "close", "resize", "drawer-body", "count", "empty", "status-buttons", "finding-rows", "term-popover", "reset", "fold-status", "report-outline", "reading-position"}
+RESERVED_IDS = {"overview", "evidence-layers", "findings-section", "print-findings", "appendix", "responsibilities", "required-modules", "future-modules", "other-modules", "metrics", "drawer", "report-data", "search", "close", "resize", "drawer-body", "count", "empty", "status-buttons", "finding-rows", "term-popover", "reset", "fold-status", "report-outline", "reading-position", "term-dialog", "term-dialog-body", "term-close", "term-dialog-title"}
 
 
 def esc(value) -> str:
@@ -212,13 +212,28 @@ def validate(data: dict) -> None:
         block(section, f"sections[{index}]")
     labels = set()
     for term in data.get("glossary", []):
-        text_fields(term, ("term", "full", "explanation"), "术语", ("term", "explanation"))
+        text_fields(term, ("term", "full", "explanation", "original", "source", "scopeNote", "matchMode"), "术语", ("term", "explanation"))
+        if term.get('original') and not (isinstance(term.get('source'), str) and term['source'].strip()):
+            raise ValueError('原文释义必须填写具体 source，不能把解释冒充原文')
+        if term.get('matchMode', 'word') not in ('word', 'code'):
+            raise ValueError('术语 matchMode 应为 word 或 code')
         if not isinstance(term, dict) or not term.get("term") or not term.get("explanation") or not isinstance(term.get("aliases", []), list):
             raise ValueError("术语需包含 term、explanation，aliases 应为数组")
+        if any(isinstance(label,str) and re.fullmatch('[A-Za-z]',label) for label in [term['term'],*term.get('aliases',[])]) and term.get('matchMode') != 'code':
+            raise ValueError('单字母代号必须明确 matchMode: code，避免普通字母误注')
         for label in [term["term"], *term.get("aliases", [])]:
             if not isinstance(label, str) or not label.strip() or label.casefold() in labels:
                 raise ValueError("术语或别名为空或重复")
             labels.add(label.casefold())
+    string_list(data.get('requiredTerms', []), 'requiredTerms')
+    required = data.get('requiredTerms', [])
+    if len(required) != len(set(required)):
+        raise ValueError('requiredTerms 不能重复')
+    definitions = {term['term']: term for term in data.get('glossary', [])}
+    for label in required:
+        term = definitions.get(label)
+        if not term or not all(isinstance(term.get(key), str) and term[key].strip() for key in ('full', 'original', 'source')):
+            raise ValueError('必需释义缺少定义、中文全称、原文或来源：' + label)
     seen_layers = set()
     for layer in data.get("evidenceLayers", []):
         text_fields(layer, ("level", "status", "reason"), "证据层", ("level", "status", "reason"))
@@ -251,6 +266,8 @@ class Renderer:
         self.evidence = {item["id"]: item for item in data["evidence"]}
         self.ids = set(RESERVED_IDS) | {section.get('id', f'section-{i+1}') for i, section in enumerate(data.get('sections', []))}
         self.evidence_anchors = {item['id']: self.unique_id(f'evidence-{i+1}') for i, item in enumerate(data['evidence'])}
+        self.term_anchors = [self.unique_id(f'term-detail-{i+1}') for i, _ in enumerate(data.get('glossary', []))]
+        self.annotated = set()
         self.outline = []
         self.terms = {}
         for index, term in enumerate(data.get("glossary", [])):
@@ -285,11 +302,36 @@ class Renderer:
         for match in self.pattern.finditer(source):
             parts.append(esc(source[last:match.start()]))
             index, term = self.terms[match.group().casefold()]
+            if term.get('matchMode') == 'code':
+                tail = source[match.end():]
+                if match.group() not in [term['term'], *term.get('aliases', [])] or re.match(r'(?:[-_]\w|:[/\\])', tail):
+                    parts.append(esc(match.group()))
+                    last = match.end()
+                    continue
+            self.annotated.add(term['term'])
             explanation = "：".join(str(term[key]) for key in ("full", "explanation") if term.get(key))
-            focus = ' tabindex="0"' if focusable else ""
-            parts.append(f'<abbr class="term"{focus} data-glossary="{index}" title="{esc(explanation)}">{esc(match.group())}</abbr>')
+            if term.get('original'):
+                explanation += '\n原文：' + term['original'] + '\n出处：' + term['source']
+            title = esc(explanation).replace('\n', '&#10;').replace('\r', '&#13;')
+            attributes = f'class="term" data-glossary="{index}" title="{title}"'
+            if focusable:
+                parts.append(f'<a {attributes} href="#{self.term_anchors[index]}" aria-label="{esc(match.group() + '：' + (term.get('full') or term['explanation']) + '；查看释义')}">{esc(match.group())}</a>')
+            else:
+                parts.append(f'<abbr {attributes}>{esc(match.group())}</abbr>')
             last = match.end()
         return "".join(parts) + esc(source[last:])
+
+    def definition(self, index, term):
+        title = esc(term['term'] + (' · ' + term['full'] if term.get('full') else ''))
+        body = '<p><strong>通俗解释：</strong>' + esc(term['explanation']).replace('\n', '<br>') + '</p>'
+        if term.get('original'):
+            body += '<p><strong>原文摘录：</strong></p><blockquote>' + esc(term['original']).replace('\n', '<br>') + '</blockquote>'
+        if term.get('source'):
+            body += '<p class="muted"><strong>原文出处：</strong>' + esc(term['source']) + '</p>'
+        if term.get('scopeNote'):
+            body += '<p><strong>适用边界：</strong>' + esc(term['scopeNote']) + '</p>'
+        body += self.refs(term.get('evidence', []))
+        return f'<article class="definition" id="{self.term_anchors[index]}"><h3>{title}</h3>{body}</article>'
 
     def text(self, value, focusable=True):
         source = str(value if value is not None else "")
@@ -494,9 +536,14 @@ class Renderer:
             self.outline.append((sid,subnumber,'证据清单与原项入口'))
             content += self.fold('证据清单与原项入口', '<p class="muted">逐项列出证明内容、原始入口与限制；点击结论旁的依据编号可直接定位本表。</p>' + self.evidence_index(), sid=sid, number=subnumber)
         content += '</section>'
+        missing = set(data.get('requiredTerms', [])) - self.annotated
+        if missing:
+            raise ValueError('必需释义未呈现在正文、表格或详情中：' + '、'.join(sorted(missing)))
         appendices = list(data.get("appendices", []))
+        glossary_appendix = None
         if data.get("glossary"):
-            appendices.append({"title": "术语表", "body": "正文虚线词可悬停或用键盘聚焦查看解释；完整释义如下。", "items": [f"{term['term']}{'（' + term['full'] + '）' if term.get('full') else ''}：{term['explanation']}" for term in data["glossary"]]})
+            glossary_appendix = {"title": "代号与术语原文释义", "body": "下划线原词可悬停或聚焦预览，点击查看完整原文、解释与出处。无脚本时跳到本表；打印保留全部释义。"}
+            appendices.append(glossary_appendix)
         if data.get("sources"):
             appendices.append({"title": "来源索引", "items": [{"body": " · ".join(source[key] for key in ("ref", "note") if source.get(key)), "links": [{"label": source["label"], "href": source["href"]}]} if source.get("href") else " · ".join(source[key] for key in ("label", "ref", "note") if source.get(key)) for source in data["sources"]]})
         appendix_number = chapters['appendix']
@@ -507,6 +554,8 @@ class Renderer:
             sid = self.unique_id('outline-' + subnumber.replace('.', '-'))
             self.outline.append((sid,subnumber,appendix['title']))
             body = self.rich(appendix.get("body", "")) + self.rich(appendix) + self.items(appendix.get("items", []))
+            if appendix is glossary_appendix:
+                body += ''.join(self.definition(i, term) for i, term in enumerate(data['glossary']))
             folds.append(self.fold(appendix["title"], body, sid=sid, number=subnumber))
         content += f'<section class="section" id="appendix" data-chapter="{appendix_number}">{appendix_heading}' + ("".join(folds) or '<p class="muted">未提供附录材料。</p>') + "</section>"
         entries = ''.join(f'<li class="outline-depth-{number.count(".")}"><a href="#{esc(sid)}">{self.number(number)}{esc(title)}</a></li>' for sid,number,title in self.outline)
@@ -523,6 +572,7 @@ class Renderer:
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>{esc(data["title"])}</title><style>{css}</style></head><body>
 <main class="shell">{content}</main>{"".join(templates)}
 <dialog id="drawer" aria-label="详情与证据"><div class="drawer"><div class="drawer-head"><strong>详情与证据</strong><button class="close" id="close">关闭</button></div><div class="resize" id="resize" role="separator" tabindex="0" aria-label="调整详情宽度" aria-orientation="vertical"></div><div class="drawer-body" id="drawer-body"></div></div></dialog>
+<dialog id="term-dialog" class="term-dialog" aria-labelledby="term-dialog-title"><div class="drawer-head"><strong id="term-dialog-title">原文与释义</strong><button id="term-close">关闭释义</button></div><div class="drawer-body" id="term-dialog-body"></div></dialog>
 <div class="term-popover" id="term-popover" role="tooltip" hidden></div><script type="application/json" id="report-data">{payload}</script><script>{js}</script></body></html>'''
 
 

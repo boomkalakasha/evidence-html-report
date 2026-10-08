@@ -8,6 +8,7 @@
 - 章节与详情统一编号，完整目录可按节跳转，滚动时显示当前章节。
 - 结论旁的凭证编号直达逐项清单；支持原项链接、具体定位和无法跳转时的清楚说明。
 - 搜索、状态筛选、清空、可调整宽度的详情抽屉及术语解释。
+- 关键代号下划线原文释义：悬停、键盘与手机点击，保留中文解释、原文、出处和依据；必需项缺失会阻止生成。
 - 正文静态生成，关闭 JavaScript 仍可读；打印包含全部详情与证据。
 - 生成器仅使用 Python 标准库，无 CDN、外部字体或运行依赖。
 
@@ -35,13 +36,14 @@ git clone https://github.com/boomkalakasha/evidence-html-report-skill.git "$env:
 python scripts/build_report.py examples/technical-brief.json output-report.html
 python scripts/build_report.py examples/audit.json output-audit.html
 python scripts/build_report.py examples/reading-layout.json output-reading.html
+python scripts/build_report.py examples/annotated-options.json output-options.html
 ```
 
 生成的 HTML 可以直接双击打开。[技能规则](SKILL.md)、[内容模型](references/content-model.md) 和 [呈现原则](references/report-design.md) 说明字段与边界。示例是虚构设计，不包含内部报告或真实业务证据。
 
 ## 本版相对旧模板的变化
 
-v1.2.0 增加有层级编号的目录与正文、当前阅读位置、逐项证据清单及原项入口。结论、正文和证据层可引用同一清单，跳转时展开所需详情；无法直达的材料仍列出来源、定位与限制。保留 v1.1.0 的就近折叠、并列对比图、分段列表、手机表头与打印恢复。见 [阅读编排示例](examples/reading-layout.json)。
+v1.3.0 增加关键代号的原文释义与必需覆盖门禁：悬停或聚焦预览，点击查看完整原文、解释、出处和依据；缺项阻止生成。单字母避免盘符和编号误注，手机、无脚本和打印保留全部定义。见 [关键代号示例](examples/annotated-options.json)。保留编号目录、逐项凭证、就近折叠与完整打印。
 
 完整变化与回退说明见 [版本变化](CHANGELOG.md)。
 

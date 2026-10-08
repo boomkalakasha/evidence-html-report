@@ -25,6 +25,13 @@ def run(output):
     source.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     builder.build(source, audit)
     checks = []
+    options = output / 'options.html'
+    option_data = json.loads((ROOT / 'examples/annotated-options.json').read_text(encoding='utf-8'))
+    option_data['glossary'][0]['original'] += '\n' + '长原文仍应完整保存在释义详情中。' * 100
+    option_data['glossary'][0]['scopeNote'] = '长边界说明只在浮层预览，完整内容在详情中保留。' * 50
+    option_source = output / 'options-data.json'
+    option_source.write_text(json.dumps(option_data,ensure_ascii=False),encoding='utf-8')
+    builder.build(option_source, options)
     with sync_playwright() as playwright:
         try:
             browser = playwright.chromium.launch()
@@ -161,6 +168,34 @@ def run(output):
         page.wait_for_function("document.querySelector('#reading-position').textContent.includes('6 / 6')")
         assert '完成率' not in page.locator('#reading-position').inner_text()
         checks.append('目录与章节编号、按节展开、当前章节、逐项凭证跳转、原项链接与无法跳转说明')
+        page.goto(options.as_uri())
+        for index, code in enumerate('ABCD'):
+            term = page.locator(f'#options a.term[data-glossary="{index}"]').first
+            assert term.inner_text() == code
+            assert 'underline' in term.evaluate('element=>getComputedStyle(element).textDecorationLine')
+            term.hover()
+            assert '原文：'+code+'：' in page.locator('#term-popover').inner_text()
+            assert '虚构设计说明' in page.locator('#term-popover').inner_text()
+            assert page.locator('#term-popover').evaluate("element=>{const box=element.getBoundingClientRect(),hint=element.querySelector('small').getBoundingClientRect();return box.height<=560&&hint.bottom<=box.bottom;}")
+            term.focus()
+            assert term.get_attribute('aria-describedby') == 'term-popover'
+            term.press('Enter')
+            assert page.locator('#term-dialog').is_visible()
+            assert code+'：' in page.locator('#term-dialog-body blockquote').inner_text()
+            page.keyboard.press('Escape')
+            assert term.evaluate('element=>document.activeElement===element')
+        checks.append('四个关键代号逐项下划线、悬停原文与出处、键盘详情及焦点返回')
+        page.set_viewport_size({'width':390,'height':844})
+        term = page.locator('#options a.term').first
+        term.focus()
+        assert page.locator('#term-popover').evaluate("element=>{const box=element.getBoundingClientRect(),hint=element.querySelector('small').getBoundingClientRect();return box.height<=560&&hint.bottom<=box.bottom;}")
+        term.click()
+        assert page.locator('#term-dialog').is_visible()
+        assert page.locator('#term-dialog').evaluate('element=>element.scrollWidth<=element.clientWidth')
+        page.locator('#term-dialog .evidence-refs a').click()
+        assert not page.locator('#term-dialog').is_visible()
+        assert page.locator('#evidence-1').is_visible()
+        page.pdf(path=str(output/'options-print.pdf'),format='A4')
         assert not errors, errors
         no_js = browser.new_context(java_script_enabled=False, viewport={"width": 390, "height": 844})
         static = no_js.new_page()
@@ -177,6 +212,13 @@ def run(output):
         static.emulate_media(media='print')
         assert static.locator('#checks .fold-body').is_visible(), '无脚本打印仍需呈现收起的内容'
         checks.append("禁用JavaScript仍可阅读正文、台账与展开详情")
+        static.goto(options.as_uri())
+        static.locator('#options a.term').first.click()
+        # Native fragment navigation reveals the complete definition without scripts.
+        assert static.locator('#term-detail-1 blockquote').is_visible()
+        static.emulate_media(media='print')
+        assert static.locator('.definition blockquote:visible').count() == 4
+        checks.append('手机点击完整释义与依据、无脚本原文锚点、打印四个完整定义')
         no_js.close()
         browser.close()
     print(json.dumps({"结果": "通过", "浏览器检查": checks, "页面错误": errors}, ensure_ascii=False, indent=2))
